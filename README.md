@@ -28,6 +28,15 @@ Every architectural decision is documented. Every bug is logged.
 The goal is to demonstrate that serious GPU architecture work
 can happen outside of large corporations.
 
+What does the name mean?
+Nova — New. A star that suddenly increases in brightness.
+The idea of something powerful emerging from nothing.
+GPU — Graphics Processing Unit. That is exactly what this is.
+TS — Three Tracing. The proprietary ray tracing and path tracing
+system that defines this architecture. The technology that separates
+this GPU from everything in its price range.
+1T — First generation. The T stands for the beginning.
+There will be a TS 1 after this — same architecture, 14nm, more cores.
 ---
 
 ## Architecture — N.E.O.N.
