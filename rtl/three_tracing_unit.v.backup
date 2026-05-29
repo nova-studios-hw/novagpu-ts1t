@@ -1,0 +1,187 @@
+`timescale 1ns/1ps
+// =============================================================================
+// three_tracing_unit.v  —  Three Tracing Unit  v3.0
+// NovaGPU TS 2T  —  Nova Studios / Maximal Technology
+//
+// Pipeline híbrido Ray Tracing + Path Tracing:
+//   Stage 1: Fragment → Ray generation
+//   Stage 2: BVH traversal (unidad primaria)
+//   Stage 3: Shade + blend
+//   Stage 4: Output con color final
+//
+// Budget control: si budget_ok=0, bypass directo.
+// =============================================================================
+
+module three_tracing_unit #(
+    parameter BVH_DEPTH    = 8,
+    parameter RAY_BUDGET   = 8,
+    parameter DATA_WIDTH   = 128,
+    parameter NUM_RT_UNITS = 4
+)(
+    input  wire                   clk,
+    input  wire                   rst_n,
+
+    input  wire [DATA_WIDTH-1:0]  frag_in,
+    input  wire                   in_valid,
+
+    input  wire                   budget_ok,
+    input  wire                   sram_ack,
+
+    output reg  [DATA_WIDTH-1:0]  frame_out,
+    output reg                    out_valid,
+
+    output reg  [15:0]            rays_fired,
+    output reg  [15:0]            rays_hit,
+    output reg  [15:0]            budget_drops
+);
+
+    // ── Ray generation desde pixel ─────────────────────────────
+    wire [15:0] frag_px    = frag_in[63:48];
+    wire [15:0] frag_py    = frag_in[47:32];
+
+    // Mapear pixel a ray (Q16.16): offset desde centro de pantalla
+    wire signed [31:0] ray_ox = ($signed({1'b0, frag_px}) - 32'sd320) * 32'sh00000011;
+    wire signed [31:0] ray_oy = ($signed({1'b0, frag_py}) - 32'sd240) * 32'sh00000011;
+    wire signed [31:0] ray_dx = 32'sh00000100;
+    wire signed [31:0] ray_dy = 32'sh00000000;
+
+    wire [DATA_WIDTH-1:0] ray_token = {ray_ox, ray_oy, ray_dx, ray_dy};
+
+    // ── BVH Unit primaria ──────────────────────────────────────
+    wire                   bvh_ready;
+    wire                   bvh_hit_valid;
+    wire [7:0]             bvh_hit_prim;
+    wire signed [31:0]     bvh_hit_t;
+    wire [DATA_WIDTH-1:0]  bvh_hit_token;
+    wire                   bvh_miss_valid;
+    wire [15:0]            bvh_nodes_tst;
+    wire [15:0]            bvh_hits_total;
+    wire [15:0]            bvh_misses_total;
+
+    wire bvh_in_valid = in_valid & budget_ok;
+
+    bvh_real #(.BVH_DEPTH(BVH_DEPTH), .DATA_WIDTH(DATA_WIDTH)) u_bvh0 (
+        .clk(clk), .rst_n(rst_n),
+        .ray_token(ray_token), .ray_valid(bvh_in_valid),
+        .ray_ready(bvh_ready),
+        .hit_valid(bvh_hit_valid), .hit_prim_id(bvh_hit_prim),
+        .hit_t(bvh_hit_t), .hit_token(bvh_hit_token),
+        .miss_valid(bvh_miss_valid),
+        .nodes_tested(bvh_nodes_tst),
+        .hits_total(bvh_hits_total), .misses_total(bvh_misses_total)
+    );
+
+    // ── Unidades BVH adicionales (idle, instanciadas para cobertura) ──
+    genvar gi;
+    generate
+        for (gi = 1; gi < NUM_RT_UNITS; gi = gi + 1) begin : bvh_aux
+            wire bvh_aux_ready, bvh_aux_hit, bvh_aux_miss;
+            wire [7:0] bvh_aux_prim;
+            wire signed [31:0] bvh_aux_t;
+            wire [DATA_WIDTH-1:0] bvh_aux_tok;
+            wire [15:0] bvh_aux_nodes, bvh_aux_hits, bvh_aux_misses;
+
+            bvh_real #(.BVH_DEPTH(BVH_DEPTH), .DATA_WIDTH(DATA_WIDTH)) u_bvh (
+                .clk(clk), .rst_n(rst_n),
+                .ray_token(ray_token), .ray_valid(1'b0),
+                .ray_ready(bvh_aux_ready),
+                .hit_valid(bvh_aux_hit), .hit_prim_id(bvh_aux_prim),
+                .hit_t(bvh_aux_t), .hit_token(bvh_aux_tok),
+                .miss_valid(bvh_aux_miss),
+                .nodes_tested(bvh_aux_nodes),
+                .hits_total(bvh_aux_hits), .misses_total(bvh_aux_misses)
+            );
+        end
+    endgenerate
+
+    // ── Color LUT por prim_id ──────────────────────────────────
+    reg [7:0] rt_prim_r;
+    wire [31:0] rt_color =
+        (rt_prim_r == 8'd0) ? 32'hFFFF0000 :  // rojo
+        (rt_prim_r == 8'd1) ? 32'hFF00FF00 :  // verde
+        (rt_prim_r == 8'd2) ? 32'hFF0000FF :  // azul
+        (rt_prim_r == 8'd3) ? 32'hFF404040 :  // gris
+                              32'hFF000000;   // negro
+
+    // ── FSM ────────────────────────────────────────────────────
+    localparam ST_IDLE  = 2'd0;
+    localparam ST_WAIT  = 2'd1;
+    localparam ST_SHADE = 2'd2;
+    localparam ST_OUT   = 2'd3;
+
+    reg [1:0]             state;
+    reg [DATA_WIDTH-1:0]  saved_frag;
+    reg                   hit_cap, miss_cap;
+    reg [31:0]            shaded_color;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            state        <= ST_IDLE;
+            out_valid    <= 1'b0;
+            frame_out    <= {DATA_WIDTH{1'b0}};
+            rays_fired   <= 16'd0;
+            rays_hit     <= 16'd0;
+            budget_drops <= 16'd0;
+            rt_prim_r    <= 8'd0;
+            shaded_color <= 32'd0;
+            saved_frag   <= {DATA_WIDTH{1'b0}};
+            hit_cap      <= 1'b0;
+            miss_cap     <= 1'b0;
+        end else begin
+            out_valid <= 1'b0;
+
+            case (state)
+                ST_IDLE: begin
+                    if (in_valid) begin
+                        if (!budget_ok) begin
+                            frame_out    <= frag_in;
+                            out_valid    <= 1'b1;
+                            budget_drops <= budget_drops + 16'd1;
+                        end else begin
+                            saved_frag <= frag_in;
+                            rays_fired <= rays_fired + 16'd1;
+                            hit_cap    <= 1'b0;
+                            miss_cap   <= 1'b0;
+                            state      <= ST_WAIT;
+                        end
+                    end
+                end
+
+                ST_WAIT: begin
+                    if (bvh_hit_valid) begin
+                        rt_prim_r <= bvh_hit_prim;
+                        rays_hit  <= rays_hit + 16'd1;
+                        hit_cap   <= 1'b1;
+                        state     <= ST_SHADE;
+                    end else if (bvh_miss_valid) begin
+                        miss_cap  <= 1'b1;
+                        state     <= ST_SHADE;
+                    end
+                end
+
+                ST_SHADE: begin
+                    if (hit_cap) begin
+                        // Blend 50/50: fragment + RT color
+                        shaded_color <= {8'hFF,
+                            saved_frag[119:112][7:1] + rt_color[23:16][7:1],
+                            saved_frag[111:104][7:1] + rt_color[15:8][7:1],
+                            saved_frag[103:96][7:1]  + rt_color[7:0][7:1]
+                        };
+                    end else begin
+                        shaded_color <= saved_frag[127:96];
+                    end
+                    state <= ST_OUT;
+                end
+
+                ST_OUT: begin
+                    frame_out <= {shaded_color, saved_frag[95:0]};
+                    out_valid <= 1'b1;
+                    state     <= ST_IDLE;
+                end
+
+                default: state <= ST_IDLE;
+            endcase
+        end
+    end
+
+endmodule

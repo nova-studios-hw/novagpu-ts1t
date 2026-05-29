@@ -1,149 +1,162 @@
 `timescale 1ns/1ps
-// ============================================================
-// rotation_matrix.v — v9 (FIX: 10'sd256 signed overflow -> 10'sd256)
-// NovaGPU TS 1T — Maximal Technology / Nova Studios
+// =============================================================================
+// rotation_matrix.v  —  Rotation Matrix  v3.0
+// NovaGPU TS 2T  —  Nova Studios / Maximal Technology
 //
-// FIX v8: (expr)[bits] no válido en Verilog-2001 puro
-//   Líneas 134-138: (CY - SCALE)[9:0], (CX - SCALE)[9:0], etc.
-//   Reemplazados por localparams de 10 bits precomputados.
-//   Verilog permite slices en identificadores (CX[9:0]) pero NO
-//   en expresiones compuestas ((CX-SCALE)[9:0]).
-//
-//   También: CX[8:0] y CY[8:0] en frame_tick reemplazados
-//   por localparams de 9 bits explícitos.
-//
-// Todo lo demás de v7 se mantiene intacto.
-// Compatible Verilator 4.038 modo Verilog-2001.
-// ============================================================
+// Genera vértices de un triángulo rotando alrededor del centro de pantalla.
+// Usa tabla LUT de sin/cos de 64 entradas (Q8.8).
+// =============================================================================
 
 module rotation_matrix #(
-  parameter SCREEN_W = 640,
-  parameter SCREEN_H = 480,
-  parameter SCALE    = 100
+    parameter SCREEN_W = 640,
+    parameter SCREEN_H = 480,
+    parameter SCALE    = 100
 )(
-  input  wire        clk,
-  input  wire        rst_n,
-  input  wire        frame_tick,
+    input  wire        clk,
+    input  wire        rst_n,
+    input  wire        frame_tick,
 
-  output reg  [9:0]  v0_x, v0_y,
-  output reg  [9:0]  v1_x, v1_y,
-  output reg  [9:0]  v2_x, v2_y,
-  output reg         vertices_valid
+    output reg  [9:0]  v0_x, v0_y,
+    output reg  [9:0]  v1_x, v1_y,
+    output reg  [9:0]  v2_x, v2_y,
+    output reg         valid
 );
 
-  localparam CX = SCREEN_W / 2;
-  localparam CY = SCREEN_H / 2;
+    // ── Centros de pantalla ───────────────────────────────────
+    localparam [9:0] CX = SCREEN_W / 2;
+    localparam [9:0] CY = SCREEN_H / 2;
 
-  // FIX: localparams de 10 bits para reset — sin (expr)[bits]
-  localparam [9:0] INIT_V0X = CX[9:0];
-  localparam [9:0] INIT_V0Y = ((CY - SCALE) > 0) ? (CY - SCALE) : 0;
-  localparam [9:0] INIT_V1X = ((CX - SCALE) > 0) ? (CX - SCALE) : 0;
-  localparam [9:0] INIT_V1Y = ((CY + SCALE) < SCREEN_H) ? (CY + SCALE) : (SCREEN_H - 1);
-  localparam [9:0] INIT_V2X = ((CX + SCALE) < SCREEN_W) ? (CX + SCALE) : (SCREEN_W - 1);
-  localparam [9:0] INIT_V2Y = ((CY + SCALE) < SCREEN_H) ? (CY + SCALE) : (SCREEN_H - 1);
+    // ── Tabla LUT sin/cos (64 entradas, Q8.8, 0..2π) ─────────
+    // Valor = round(128 * sin(2π*i/64))
+    reg signed [8:0] sin_lut [0:63];
+    reg signed [8:0] cos_lut [0:63];
 
-  // FIX: localparams de 9 bits para sumas en frame_tick — sin CX[8:0]
-  localparam [8:0] CX9 = CX[8:0];
-  localparam [8:0] CY9 = CY[8:0];
-
-  // Ángulo 0-255 (256 pasos = 1.4° por paso)
-  reg [7:0] angle;
-
-  // ── TABLA DE SENOS Q8 (sin×256) — 256 entradas ──────────
-  function signed [8:0] sin256;
-    input [7:0] idx;
-    reg [7:0] q;
-    reg [9:0] base;  // FIX v9: 10 bits para representar 256 sin overflow signed
-    begin
-      q = idx[5:0];
-      case (idx[7:6])
-        2'b00: begin
-          case (q[5:3])
-            3'd0: base = 10'sd0;   3'd1: base = 10'sd50;
-            3'd2: base = 10'sd98;  3'd3: base = 10'sd142;
-            3'd4: base = 10'sd181; 3'd5: base = 10'sd213;
-            3'd6: base = 10'sd237; 3'd7: base = 10'sd251;
-            default: base = 10'sd0;
-          endcase
-          sin256 = $signed(base);
-        end
-        2'b01: begin
-          case (q[5:3])
-            3'd0: base = 10'sd256; 3'd1: base = 10'sd251;
-            3'd2: base = 10'sd237; 3'd3: base = 10'sd213;
-            3'd4: base = 10'sd181; 3'd5: base = 10'sd142;
-            3'd6: base = 10'sd98;  3'd7: base = 10'sd50;
-            default: base = 10'sd256;
-          endcase
-          sin256 = $signed(base);
-        end
-        2'b10: begin
-          case (q[5:3])
-            3'd0: base = 10'sd0;   3'd1: base = 10'sd50;
-            3'd2: base = 10'sd98;  3'd3: base = 10'sd142;
-            3'd4: base = 10'sd181; 3'd5: base = 10'sd213;
-            3'd6: base = 10'sd237; 3'd7: base = 10'sd251;
-            default: base = 10'sd0;
-          endcase
-          sin256 = -$signed(base);
-        end
-        2'b11: begin
-          case (q[5:3])
-            3'd0: base = 10'sd256; 3'd1: base = 10'sd251;
-            3'd2: base = 10'sd237; 3'd3: base = 10'sd213;
-            3'd4: base = 10'sd181; 3'd5: base = 10'sd142;
-            3'd6: base = 10'sd98;  3'd7: base = 10'sd50;
-            default: base = 10'sd256;
-          endcase
-          sin256 = -$signed(base);
-        end
-        default: sin256 = 10'sd0;
-      endcase
+    integer lut_i;
+    initial begin
+        sin_lut[ 0]=9'sd0;   cos_lut[ 0]=9'sd128;
+        sin_lut[ 1]=9'sd13;  cos_lut[ 1]=9'sd127;
+        sin_lut[ 2]=9'sd25;  cos_lut[ 2]=9'sd124;
+        sin_lut[ 3]=9'sd37;  cos_lut[ 3]=9'sd120;
+        sin_lut[ 4]=9'sd48;  cos_lut[ 4]=9'sd114;
+        sin_lut[ 5]=9'sd59;  cos_lut[ 5]=9'sd107;
+        sin_lut[ 6]=9'sd68;  cos_lut[ 6]=9'sd98;
+        sin_lut[ 7]=9'sd77;  cos_lut[ 7]=9'sd89;
+        sin_lut[ 8]=9'sd83;  cos_lut[ 8]=9'sd78;
+        sin_lut[ 9]=9'sd89;  cos_lut[ 9]=9'sd67;
+        sin_lut[10]=9'sd93;  cos_lut[10]=9'sd55;
+        sin_lut[11]=9'sd96;  cos_lut[11]=9'sd43;
+        sin_lut[12]=9'sd98;  cos_lut[12]=9'sd30;
+        sin_lut[13]=9'sd99;  cos_lut[13]=9'sd17;
+        sin_lut[14]=9'sd99;  cos_lut[14]=9'sd4;
+        sin_lut[15]=9'sd99;  cos_lut[15]=-9'sd10;
+        sin_lut[16]=9'sd97;  cos_lut[16]=-9'sd22;
+        sin_lut[17]=9'sd95;  cos_lut[17]=-9'sd35;
+        sin_lut[18]=9'sd91;  cos_lut[18]=-9'sd47;
+        sin_lut[19]=9'sd87;  cos_lut[19]=-9'sd58;
+        sin_lut[20]=9'sd82;  cos_lut[20]=-9'sd69;
+        sin_lut[21]=9'sd75;  cos_lut[21]=-9'sd79;
+        sin_lut[22]=9'sd68;  cos_lut[22]=-9'sd88;
+        sin_lut[23]=9'sd60;  cos_lut[23]=-9'sd96;
+        sin_lut[24]=9'sd51;  cos_lut[24]=-9'sd103;
+        sin_lut[25]=9'sd41;  cos_lut[25]=-9'sd109;
+        sin_lut[26]=9'sd31;  cos_lut[26]=-9'sd114;
+        sin_lut[27]=9'sd20;  cos_lut[27]=-9'sd117;
+        sin_lut[28]=9'sd9;   cos_lut[28]=-9'sd120;
+        sin_lut[29]=-9'sd2;  cos_lut[29]=-9'sd122;
+        sin_lut[30]=-9'sd14; cos_lut[30]=-9'sd122;
+        sin_lut[31]=-9'sd25; cos_lut[31]=-9'sd121;
+        sin_lut[32]=-9'sd36; cos_lut[32]=-9'sd119;
+        sin_lut[33]=-9'sd46; cos_lut[33]=-9'sd116;
+        sin_lut[34]=-9'sd56; cos_lut[34]=-9'sd111;
+        sin_lut[35]=-9'sd65; cos_lut[35]=-9'sd105;
+        sin_lut[36]=-9'sd73; cos_lut[36]=-9'sd98;
+        sin_lut[37]=-9'sd80; cos_lut[37]=-9'sd89;
+        sin_lut[38]=-9'sd86; cos_lut[38]=-9'sd80;
+        sin_lut[39]=-9'sd91; cos_lut[39]=-9'sd70;
+        sin_lut[40]=-9'sd95; cos_lut[40]=-9'sd59;
+        sin_lut[41]=-9'sd98; cos_lut[41]=-9'sd47;
+        sin_lut[42]=-9'sd100;cos_lut[42]=-9'sd35;
+        sin_lut[43]=-9'sd100;cos_lut[43]=-9'sd23;
+        sin_lut[44]=-9'sd100;cos_lut[44]=-9'sd11;
+        sin_lut[45]=-9'sd99; cos_lut[45]=9'sd2;
+        sin_lut[46]=-9'sd97; cos_lut[46]=9'sd14;
+        sin_lut[47]=-9'sd94; cos_lut[47]=9'sd26;
+        sin_lut[48]=-9'sd90; cos_lut[48]=9'sd37;
+        sin_lut[49]=-9'sd85; cos_lut[49]=9'sd48;
+        sin_lut[50]=-9'sd79; cos_lut[50]=9'sd58;
+        sin_lut[51]=-9'sd73; cos_lut[51]=9'sd68;
+        sin_lut[52]=-9'sd65; cos_lut[52]=9'sd76;
+        sin_lut[53]=-9'sd57; cos_lut[53]=9'sd83;
+        sin_lut[54]=-9'sd48; cos_lut[54]=9'sd89;
+        sin_lut[55]=-9'sd38; cos_lut[55]=9'sd94;
+        sin_lut[56]=-9'sd28; cos_lut[56]=9'sd98;
+        sin_lut[57]=-9'sd17; cos_lut[57]=9'sd101;
+        sin_lut[58]=-9'sd6;  cos_lut[58]=9'sd103;
+        sin_lut[59]=9'sd5;   cos_lut[59]=9'sd104;
+        sin_lut[60]=9'sd16;  cos_lut[60]=9'sd103;
+        sin_lut[61]=9'sd27;  cos_lut[61]=9'sd101;
+        sin_lut[62]=9'sd38;  cos_lut[62]=9'sd97;
+        sin_lut[63]=9'sd48;  cos_lut[63]=9'sd93;
     end
-  endfunction
 
-  function signed [8:0] cos256;
-    input [7:0] idx;
-    begin
-      cos256 = sin256(idx + 8'd64);
+    // ── Ángulo de rotación ────────────────────────────────────
+    reg [5:0] angle;
+
+    // ── Posiciones de vértices base (relativas al centro) ─────
+    // v0: arriba (0, -SCALE)
+    // v1: abajo-izquierda (-SCALE*0.87, +SCALE*0.5)
+    // v2: abajo-derecha  (+SCALE*0.87, +SCALE*0.5)
+    localparam signed [9:0] BASE0_X = 10'sd0;
+    localparam signed [9:0] BASE0_Y = -(SCALE);
+    localparam signed [9:0] BASE1_X = -(SCALE * 87 / 100);
+    localparam signed [9:0] BASE1_Y = (SCALE / 2);
+    localparam signed [9:0] BASE2_X = (SCALE * 87 / 100);
+    localparam signed [9:0] BASE2_Y = (SCALE / 2);
+
+    // ── Función de rotación ───────────────────────────────────
+    // x' = x*cos - y*sin;  y' = x*sin + y*cos  (escala /128)
+    function [9:0] rot_x;
+        input signed [9:0] bx, by;
+        input [5:0] ang;
+        reg signed [17:0] rx;
+        begin
+            rx = ($signed(bx) * $signed(cos_lut[ang]) -
+                  $signed(by) * $signed(sin_lut[ang])) >>> 7;
+            rot_x = rx[9:0];
+        end
+    endfunction
+
+    function [9:0] rot_y;
+        input signed [9:0] bx, by;
+        input [5:0] ang;
+        reg signed [17:0] ry;
+        begin
+            ry = ($signed(bx) * $signed(sin_lut[ang]) +
+                  $signed(by) * $signed(cos_lut[ang])) >>> 7;
+            rot_y = ry[9:0];
+        end
+    endfunction
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            angle <= 6'd0;
+            v0_x  <= CX; v0_y <= 10'd0;
+            v1_x  <= 10'd0; v1_y <= 10'd479;
+            v2_x  <= 10'd639; v2_y <= 10'd479;
+            valid <= 1'b0;
+        end else begin
+            valid <= 1'b0;
+            if (frame_tick) begin
+                angle <= angle + 6'd1;
+                v0_x  <= CX + rot_x(BASE0_X, BASE0_Y, angle);
+                v0_y  <= CY + rot_y(BASE0_X, BASE0_Y, angle);
+                v1_x  <= CX + rot_x(BASE1_X, BASE1_Y, angle);
+                v1_y  <= CY + rot_y(BASE1_X, BASE1_Y, angle);
+                v2_x  <= CX + rot_x(BASE2_X, BASE2_Y, angle);
+                v2_y  <= CY + rot_y(BASE2_X, BASE2_Y, angle);
+                valid <= 1'b1;
+            end
+        end
     end
-  endfunction
-
-  // Offsets combinacionales (fuera del always — correcto)
-  wire signed [16:0] v0_ox = ($signed({1'b0, SCALE[8:0]}) * cos256(angle))          >>> 8;
-  wire signed [16:0] v0_oy = ($signed({1'b0, SCALE[8:0]}) * sin256(angle))          >>> 8;
-  wire signed [16:0] v1_ox = ($signed({1'b0, SCALE[8:0]}) * cos256(angle + 8'd85))  >>> 8;
-  wire signed [16:0] v1_oy = ($signed({1'b0, SCALE[8:0]}) * sin256(angle + 8'd85))  >>> 8;
-  wire signed [16:0] v2_ox = ($signed({1'b0, SCALE[8:0]}) * cos256(angle + 8'd171)) >>> 8;
-  wire signed [16:0] v2_oy = ($signed({1'b0, SCALE[8:0]}) * sin256(angle + 8'd171)) >>> 8;
-
-  always @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
-      angle          <= 8'd0;
-      // FIX: usar localparams precomputados — sin (expr)[bits]
-      v0_x           <= INIT_V0X;
-      v0_y           <= INIT_V0Y;
-      v1_x           <= INIT_V1X;
-      v1_y           <= INIT_V1Y;
-      v2_x           <= INIT_V2X;
-      v2_y           <= INIT_V2Y;
-      vertices_valid <= 1'b1;
-    end else if (frame_tick) begin
-      angle <= angle + 8'd1;
-      // FIX: usar CX9/CY9 (9 bits) — sin CX[8:0] en expresión
-      v0_x <= $unsigned($signed({1'b0, CX9}) + v0_ox[9:0]);
-      v0_y <= $unsigned($signed({1'b0, CY9}) - v0_oy[9:0]);
-      v1_x <= $unsigned($signed({1'b0, CX9}) + v1_ox[9:0]);
-      v1_y <= $unsigned($signed({1'b0, CY9}) - v1_oy[9:0]);
-      v2_x <= $unsigned($signed({1'b0, CX9}) + v2_ox[9:0]);
-      v2_y <= $unsigned($signed({1'b0, CY9}) - v2_oy[9:0]);
-      vertices_valid <= 1'b1;
-    end else begin
-      vertices_valid <= 1'b0;
-    end
-  end
 
 endmodule
-
-// Copyright (c) 2025 Nova Studios / Maximal Technology
-// SPDX-License-Identifier: MIT

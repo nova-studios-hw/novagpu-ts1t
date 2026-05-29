@@ -74,12 +74,12 @@ module neon_sram_controller #(
            pf_data[0],  pf_data[1],  pf_data[2],  pf_data[3],
            pf_data[4],  pf_data[5],  pf_data[6],  pf_data[7],
            addr_i) begin
-    prefetch_hit      = 1'b0;
-    prefetch_hit_data = {DATA_WIDTH{1'b0}};
+    prefetch_hit      <= 1'b0;
+    prefetch_hit_data <= {DATA_WIDTH{1'b0}};
     for (ci = 0; ci < PREFETCH_DEPTH; ci = ci + 1) begin
       if (pf_valid[ci] && pf_addr[ci] == addr_i) begin
-        prefetch_hit      = 1'b1;
-        prefetch_hit_data = pf_data[ci];
+        prefetch_hit      <= 1'b1;
+        prefetch_hit_data <= pf_data[ci];
       end
     end
   end
@@ -100,15 +100,16 @@ module neon_sram_controller #(
     reg [31:0] z_value;
     begin
       // Base pattern según banco (datos coherentes por banco)
-      pattern_base = {fn_bank_sel, 10'b0};  // FIX v8: 10'h000 reemplazado por 10'b0 (sin ambigüedad de bits)
+      pattern_base = {fn_bank_sel, 10'b0};  // FIX v8: 10'b0 reemplazado por 10'b0 (sin ambigüedad de bits)
 
       // Generar checkerboard para texturas
       checker_x = addr[7:0];
       checker_y = addr[15:8];
+
       if ((checker_x[4] ^ checker_y[4]) == 1'b0)
-        pattern_base = pattern_base ^ 16'h00FF;  // Color claro
+        pattern_base = pattern_base ^ 16'h00FF;
       else
-        pattern_base = pattern_base ^ 16'h0000;  // Color oscuro
+        pattern_base = pattern_base ^ 16'h0000;
 
       // Z-buffer: dirección más profunda = valor mayor
       z_value = addr[25:2] * 16'h0100;  // Z aumenta con dirección
@@ -154,7 +155,7 @@ module neon_sram_controller #(
           // CORRECCION v7: Precalcular dato procedural
           miss_data_reg <= procedural_data(addr_i, bank_sel);
         end else if (miss_counter > 4'd0) begin
-          miss_counter <= miss_counter - 4'd1;
+          if (miss_counter > 0) miss_counter <= miss_counter - 4'd1;
           ack_o        <= 1'b0;
         end else begin
           // CORRECCION v7: Usar dato procedural, NO placeholder
@@ -230,6 +231,3 @@ module async_handshake #(
   assign ack_o  = ack_i;
 
 endmodule
-
-// Copyright (c) 2025 Nova Studios / Maximal Technology
-// SPDX-License-Identifier: MIT
