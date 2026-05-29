@@ -369,10 +369,10 @@ Expected output:
 ========================================
 RESULTADO FINAL NovaGPU TS 1T v3.0
 ========================================
-Total Tests : 35
+Total Tests : 37
 PASSED      : 19
-FAILED      : 16
-Coverage    : 54%
+FAILED      : 18
+Coverage    : 51%
 ========================================
 ```
 
