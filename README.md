@@ -45,7 +45,7 @@
 
 ## Successful Hardware Synthesis Milestone
 
-NovaGPU TS 1T successfully synthesized the `triangle_rasterizer and token_matching_unit` module using **Yosys** targeting Xilinx FPGA architectures.
+NovaGPU TS 1T successfully synthesized the `triangle_rasterizer, shader_cluster and token_matching_unit` module using **Yosys** targeting Xilinx FPGA architectures.
 
 This validates that the raster pipeline is not only simulated, but also structurally compatible with real FPGA implementation flows.
 
@@ -117,3 +117,123 @@ Warnings: 4 unique messages, 4 total
 End of script. Logfile hash: 538a8b7715
 Yosys 0.65+67 (git sha1 1801abf30-dirty, x86_64-w64-mingw32-g++ 13.2.1 -O3)
 Time spent: 1% 30x opt_expr (0 sec), 1% 19x read_verilog (0 sec), ...
+
+
+=== shader_cluster ===
+
+
+9.51. Executing CHECK pass (checking for obvious problems).
+Checking module $paramod\exec_unit\DATA_WIDTH=s32'00000000000000000000000010000000...
+Checking module $paramod\warp_scheduler\NUM_WARPS=s32'00000000000000000000000000000100...
+Checking module shader_cluster...
+Found and reported 0 problems.
+
+10. Executing CHECK pass (checking for obvious problems).
+Checking module $paramod\exec_unit\DATA_WIDTH=s32'00000000000000000000000010000000...
+Checking module $paramod\warp_scheduler\NUM_WARPS=s32'00000000000000000000000000000100...
+Checking module shader_cluster...
+Found and reported 0 problems.
+
+11. Printing statistics.
+
+=== $paramod\exec_unit\DATA_WIDTH=s32'00000000000000000000000010000000 ===
+
+        +----------Local Count, excluding submodules.
+        |
+    19902 wires
+    59578 wire bits
+       37 public wires
+     1751 public wire bits
+       12 ports
+      916 port bits
+    43808 cells
+      145   FDCE
+      146   INV
+      103   LUT1
+     5274   LUT2
+     7946   LUT3
+     2049   LUT4
+     4159   LUT5
+    19509   LUT6
+     3471   MUXF7
+     1006   MUXF8
+
+=== $paramod\warp_scheduler\NUM_WARPS=s32'00000000000000000000000000000100 ===
+
+        +----------Local Count, excluding submodules.
+        |
+       13 wires
+       20 wire bits
+        9 public wires
+       16 public wire bits
+        5 ports
+        9 port bits
+        9 cells
+        2   FDCE
+        2   INV
+        1   LUT4
+        4   LUT6
+
+=== shader_cluster ===
+
+        +----------Local Count, excluding submodules.
+        |
+      581 wires
+     2865 wire bits
+       44 public wires
+     1436 public wire bits
+       25 ports
+      917 port bits
+     1942 cells
+        1   BUFG
+      508   FDCE
+        4   FDPE
+      772   IBUF
+      512   INV
+      145   OBUF
+        2 submodules
+        1   $paramod\exec_unit\DATA_WIDTH=s32'00000000000000000000000010000000
+        1   $paramod\warp_scheduler\NUM_WARPS=s32'00000000000000000000000000000100
+
+=== design hierarchy ===
+
+        +----------Count including submodules.
+        |
+    45759 shader_cluster
+    43808 $paramod\exec_unit\DATA_WIDTH=s32'00000000000000000000000010000000
+        9 $paramod\warp_scheduler\NUM_WARPS=s32'00000000000000000000000000000100
+
+        +----------Count including submodules.
+        |
+    20496 wires
+    62463 wire bits
+       90 public wires
+     3203 public wire bits
+       42 ports
+     1842 port bits
+        - memories
+        - memory bits
+        - processes
+    45759 cells
+        1   BUFG
+      655   FDCE
+        4   FDPE
+      772   IBUF
+      660   INV
+      103   LUT1
+     5274   LUT2
+     7946   LUT3
+     2050   LUT4
+     4159   LUT5
+    19513   LUT6
+     3471   MUXF7
+     1006   MUXF8
+      145   OBUF
+        2 submodules
+        1   $paramod\exec_unit\DATA_WIDTH=s32'00000000000000000000000010000000
+        1   $paramod\warp_scheduler\NUM_WARPS=s32'00000000000000000000000000000100
+
+Warnings: 2 unique messages, 2 total
+End of script. Logfile hash: d29c445f2e
+Yosys 0.65+67 (git sha1 1801abf30-dirty, x86_64-w64-mingw32-g++ 13.2.1 -O3)
+Time spent: 1% 33x opt_expr (0 sec), 1% 23x opt_clean (0 sec), ...
