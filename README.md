@@ -14,7 +14,7 @@
 
 ### ⚠️ ACTIVE DEVELOPMENT — RTL VALIDATION PHASE
 
-**35 tests implemented · 19 passing · 54% functional coverage**  
+**37 tests implemented · 19 passing · 51% functional coverage**  
 *FPGA demo currently in progress.*
 
 </div>
