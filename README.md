@@ -305,7 +305,7 @@ Frame B ─────┘
 | BVH | 5 | 3 | ⚠️ WIP |
 | SRAM / MVU | 5 | 4 | ✅ Mostly stable |
 | Integration | 4 | 3 | ⚠️ In progress |
-| **TOTAL** | **35** | **19 (54%)** | **Active Development** |
+| **TOTAL** | **37** | **19 (51%)** | **Active Development** |
 
 ---
 
