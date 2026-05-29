@@ -45,7 +45,7 @@
 
 ## Successful Hardware Synthesis Milestone
 
-NovaGPU TS 1T successfully synthesized the `triangle_rasterizer` module using **Yosys** targeting Xilinx FPGA architectures.
+NovaGPU TS 1T successfully synthesized the `triangle_rasterizer and token_matching_unit` module using **Yosys** targeting Xilinx FPGA architectures.
 
 This validates that the raster pipeline is not only simulated, but also structurally compatible with real FPGA implementation flows.
 
@@ -77,3 +77,43 @@ Cells:
 
 CHECK pass:
 Found and reported 0 problems.
+
+=== token_matching_unit ===
+
+6.51. Executing CHECK pass (checking for obvious problems).
+Checking module token_matching_unit...
+Found and reported 0 problems.
+
+7. Printing statistics.
+
+
+
+        +----------Local Count, excluding submodules.
+        |
+     6851 wires
+    17421 wire bits
+      143 public wires
+     5487 public wire bits
+       11 ports
+      437 port bits
+    14279 cells
+        1   BUFG
+       15   CARRY4
+     5014   FDCE
+        1   FDPE
+      272   FDRE
+      147   IBUF
+     5036   INV
+      796   LUT2
+      387   LUT3
+      106   LUT4
+       93   LUT5
+     1899   LUT6
+      166   MUXF7
+       56   MUXF8
+      290   OBUF
+
+Warnings: 4 unique messages, 4 total
+End of script. Logfile hash: 538a8b7715
+Yosys 0.65+67 (git sha1 1801abf30-dirty, x86_64-w64-mingw32-g++ 13.2.1 -O3)
+Time spent: 1% 30x opt_expr (0 sec), 1% 19x read_verilog (0 sec), ...
