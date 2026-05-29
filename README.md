@@ -352,7 +352,7 @@ cd novagpu-ts1t
 ## Compile
 
 ```bash
-iverilog -g2012 -o novagpu_sim rtl/*.v sim/tb_maestro_v12.v
+iverilog -g2012 -o novagpu_sim rtl/*.v sim/tb_novagpu_v12.v
 ```
 
 ---
