@@ -120,7 +120,7 @@ module bvh_real #(
 
     output reg                    hit_valid,
     output reg  [7:0]             hit_prim_id,
-    output reg  signed [31:0]     hit_t,
+    output reg  [31:0]            hit_t,
     output reg  [DATA_WIDTH-1:0]  hit_token,
 
     output reg                    miss_valid,
@@ -131,8 +131,6 @@ module bvh_real #(
 );
 
     // ── BVH Node ROM (8 nodos, árbol 3 niveles) ───────────────
-    // Formato por nodo: [xmin, ymin, xmax, ymax, left_child, right_child, is_leaf, prim_id]
-    // Coordenadas en Q16.16
     localparam N = 8;
     reg signed [31:0] node_xmin  [0:N-1];
     reg signed [31:0] node_ymin  [0:N-1];
@@ -143,51 +141,42 @@ module bvh_real #(
     reg               node_leaf  [0:N-1];
     reg [7:0]         node_prim  [0:N-1];
 
-    integer ni;
     initial begin
-        // Nodo 0: root — cubre toda la pantalla [0..640]×[0..480]
         node_xmin[0] = 32'h00000000; node_ymin[0] = 32'h00000000;
-        node_xmax[0] = 32'h02800000; node_ymax[0] = 32'h01E00000; // 640<<16, 480<<16
+        node_xmax[0] = 32'h02800000; node_ymax[0] = 32'h01E00000;
         node_left[0] = 3'd1; node_right[0] = 3'd2;
         node_leaf[0] = 1'b0; node_prim[0]  = 8'd0;
 
-        // Nodo 1: mitad izquierda [0..320]×[0..480]
         node_xmin[1] = 32'h00000000; node_ymin[1] = 32'h00000000;
         node_xmax[1] = 32'h01400000; node_ymax[1] = 32'h01E00000;
         node_left[1] = 3'd3; node_right[1] = 3'd4;
         node_leaf[1] = 1'b0; node_prim[1]  = 8'd0;
 
-        // Nodo 2: mitad derecha [320..640]×[0..480]
         node_xmin[2] = 32'h01400000; node_ymin[2] = 32'h00000000;
         node_xmax[2] = 32'h02800000; node_ymax[2] = 32'h01E00000;
         node_left[2] = 3'd5; node_right[2] = 3'd6;
         node_leaf[2] = 1'b0; node_prim[2]  = 8'd0;
 
-        // Nodo 3: cuadrante superior-izquierdo (hoja, prim 0)
         node_xmin[3] = 32'h00000000; node_ymin[3] = 32'h00000000;
         node_xmax[3] = 32'h01400000; node_ymax[3] = 32'h00F00000;
         node_left[3] = 3'd0; node_right[3] = 3'd0;
         node_leaf[3] = 1'b1; node_prim[3]  = 8'd0;
 
-        // Nodo 4: cuadrante inferior-izquierdo (hoja, prim 1)
         node_xmin[4] = 32'h00000000; node_ymin[4] = 32'h00F00000;
         node_xmax[4] = 32'h01400000; node_ymax[4] = 32'h01E00000;
         node_left[4] = 3'd0; node_right[4] = 3'd0;
         node_leaf[4] = 1'b1; node_prim[4]  = 8'd1;
 
-        // Nodo 5: cuadrante superior-derecho (hoja, prim 2)
         node_xmin[5] = 32'h01400000; node_ymin[5] = 32'h00000000;
         node_xmax[5] = 32'h02800000; node_ymax[5] = 32'h00F00000;
         node_left[5] = 3'd0; node_right[5] = 3'd0;
         node_leaf[5] = 1'b1; node_prim[5]  = 8'd2;
 
-        // Nodo 6: cuadrante inferior-derecho (hoja, prim 3)
         node_xmin[6] = 32'h01400000; node_ymin[6] = 32'h00F00000;
         node_xmax[6] = 32'h02800000; node_ymax[6] = 32'h01E00000;
         node_left[6] = 3'd0; node_right[6] = 3'd0;
         node_leaf[6] = 1'b1; node_prim[6]  = 8'd3;
 
-        // Nodo 7: no usado
         node_xmin[7] = 32'h0; node_ymin[7] = 32'h0;
         node_xmax[7] = 32'h0; node_ymax[7] = 32'h0;
         node_left[7] = 3'd0; node_right[7] = 3'd0;
@@ -201,7 +190,7 @@ module bvh_real #(
     wire signed [31:0] ray_dy = ray_token[31:0];
 
     // ── Reciprocal LUT ─────────────────────────────────────────
-    wire [7:0]  rdx_idx = ray_dx[23:16]; // bits [23:16] del Q16.16
+    wire [7:0]  rdx_idx = ray_dx[23:16];
     wire [7:0]  rdy_idx = ray_dy[23:16];
     wire [31:0] inv_dx, inv_dy;
 
@@ -222,6 +211,7 @@ module bvh_real #(
     );
 
     // ── DFS Stack ─────────────────────────────────────────────
+    localparam [2:0] STACK_MAX = BVH_DEPTH - 1; // FIX: 3-bit bound para comparación segura
     reg [2:0]  stack     [0:BVH_DEPTH-1];
     reg [2:0]  stack_ptr;
     reg [2:0]  cur_node;
@@ -253,8 +243,9 @@ module bvh_real #(
             test_ymin     <= 32'sd0;
             test_xmax     <= 32'sd0;
             test_ymax     <= 32'sd0;
-            for (ni = 0; ni < BVH_DEPTH; ni = ni + 1)
-                stack[ni] <= 3'd0;
+            // FIX: unrolled loop — avoids integer loop variable in sequential always
+            stack[0] <= 3'd0; stack[1] <= 3'd0; stack[2] <= 3'd0; stack[3] <= 3'd0;
+            stack[4] <= 3'd0; stack[5] <= 3'd0; stack[6] <= 3'd0; stack[7] <= 3'd0;
         end else begin
             hit_valid  <= 1'b0;
             miss_valid <= 1'b0;
@@ -263,15 +254,15 @@ module bvh_real #(
                 ST_IDLE: begin
                     ray_ready <= 1'b1;
                     if (ray_valid) begin
-                        saved_ray  <= ray_token;
-                        ray_ready  <= 1'b0;
-                        cur_node   <= 3'd0;
-                        stack_ptr  <= 3'd0;
-                        state      <= ST_PUSH;
+                        saved_ray    <= ray_token;
+                        ray_ready    <= 1'b0;
+                        cur_node     <= 3'd0;
+                        stack_ptr    <= 3'd0;
+                        nodes_tested <= 16'd0; // FIX: reset por ray, no acumulado global
+                        state        <= ST_PUSH;
                     end
                 end
 
-                // Cargar AABB del nodo actual para el combinacional
                 ST_PUSH: begin
                     test_xmin <= node_xmin[cur_node];
                     test_ymin <= node_ymin[cur_node];
@@ -280,7 +271,6 @@ module bvh_real #(
                     state     <= ST_WAIT;
                 end
 
-                // Dar 1 ciclo para que comb se estabilice
                 ST_WAIT: begin
                     state <= ST_TEST;
                 end
@@ -291,8 +281,7 @@ module bvh_real #(
                         if (node_leaf[cur_node]) begin
                             state <= ST_LEAF;
                         end else begin
-                            // Push right child, visit left
-                            if (stack_ptr < BVH_DEPTH - 1) begin
+                            if (stack_ptr < STACK_MAX) begin  // FIX: comparación 3-bit vs 3-bit
                                 stack[stack_ptr] <= node_right[cur_node];
                                 stack_ptr        <= stack_ptr + 3'd1;
                             end

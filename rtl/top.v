@@ -1,248 +1,257 @@
 `timescale 1ns/1ps
 // =============================================================================
-// top.v  —  NovaGPU TS 2T  Top-Level Integrator  v3.0
+// fpga_top.v  —  NovaGPU TS 1T  FPGA Top-Level REAL
 // Nova Studios / Maximal Technology
 //
-// Pipeline completo:
-//   PCIe → TMU → Shader → Three Tracing → MVU → frame_out
-//   Rasterizer → Tile Arbiter → SRAM → fb_write
+// Target : Digilent Arty A7-100T  (xc7a100tcsg324-1)
+// I/O    : 20 pines físicos  (< 210 disponibles)
 //
-// Parámetros por defecto FPGA-friendly (Arty A7-100T @ 100 MHz).
+// Jerarquía:
+//   fpga_top          ← TOP-LEVEL (este archivo, único con pines externos)
+//   └── novagpu_core  ← núcleo GPU (top.v renombrado)
+//       ├── token_matching_unit
+//       ├── shader_cluster
+//       ├── budget_controller
+//       ├── three_tracing_unit
+//       ├── triangle_rasterizer
+//       ├── tile_arbiter
+//       ├── sram_integrated
+//       └── mvu
+//
+// INSTRUCCIÓN A VIVADO: Set As Top → fpga_top
 // =============================================================================
 
-module novagpu_ts1t_top #(
-    parameter DATA_WIDTH      = 128,
-    parameter TAG_WIDTH       = 16,
-    parameter TMU_SLOTS       = 64,
-    parameter MVU_REAL_FRAMES = 2,
-    parameter MVU_GEN_FRAMES  = 4,
-    parameter TARGET_FREQ_MHZ = 250,
-    parameter NUM_ARB_PORTS   = 4,
-    parameter TT_BVH_DEPTH    = 8,
-    parameter TT_RAY_BUDGET   = 8,
-    parameter TT_NUM_RT_UNITS = 4,
-    parameter RT_PERCENT      = 25,
-    parameter SCREEN_W        = 640,
-    parameter SCREEN_H        = 480
-)(
-    input  wire        clk,
-    input  wire        rst_n,
+module fpga_top (
+    input  wire        clk,       // E3 — 100 MHz onboard oscillator
+    input  wire        rst_n,     // C2 — BTN0, activo bajo
 
-    // PCIe / Data Interface
-    input  wire [255:0] pcie_data_in,
-    output wire [255:0] pcie_data_out,
-    input  wire         pcie_valid,
-    output wire         pcie_ready,
+    // VGA 12-bit  (Pmod JB = R/G, Pmod JC = B/sync)
+    output wire [3:0]  vga_r,
+    output wire [3:0]  vga_g,
+    output wire [3:0]  vga_b,
+    output wire        vga_hsync,
+    output wire        vga_vsync,
 
-    // Motion Vectors
-    input  wire [15:0]  mv_x, mv_y,
-    input  wire         mv_valid,
-    input  wire         frame_start,
-
-    // Rasterizer input
-    input  wire [10:0]  v0_x, v0_y, v1_x, v1_y, v2_x, v2_y,
-    input  wire [31:0]  c0, c1, c2, z0, z1, z2,
-    input  wire         rast_start,
-
-    // MVP Matrix
-    input  wire [31:0]  mvp_m00, mvp_m01, mvp_m02, mvp_m03,
-    input  wire [31:0]  mvp_m10, mvp_m11, mvp_m12, mvp_m13,
-    input  wire [31:0]  mvp_m20, mvp_m21, mvp_m22, mvp_m23,
-    input  wire [31:0]  mvp_m30, mvp_m31, mvp_m32, mvp_m33,
-    input  wire         mvp_load,
-
-    // Frame output
-    output wire [DATA_WIDTH-1:0] frame_out,
-    output wire                   frame_valid,
-    output wire [2:0]             frame_count,
-    output wire                   mvu_ready_out,
-
-    // Framebuffer write
-    output wire [31:0]  fb_color,
-    output wire [18:0]  fb_addr,
-    output wire         fb_write,
-
-    // Status
-    output wire [7:0]   rt_load,
-    output wire         budget_ok_out,
-    output wire [15:0]  sram_hits,
-    output wire [15:0]  sram_misses,
-
-    // AXI4-Lite
-    output wire         axi_awready,
-    output wire         axi_wready,
-    output wire         axi_arready,
-    output wire         axi_rvalid,
-    output wire [DATA_WIDTH-1:0] axi_rdata,
-
-    // Bandwidth
-    output wire [15:0]  bw_instrmem,
-    output wire [15:0]  bw_bvhmem,
-    output wire [15:0]  bw_texmem,
-    output wire [15:0]  bw_framebuf,
-
-    // Rast stats
-    output wire [19:0]  rast_pixels_emitted,
-    output wire [19:0]  rast_pixels_skipped,
-    output wire         rast_frame_done
+    // LEDs de estado  LD0-LD3
+    output wire [3:0]  led
 );
 
-    // ── TMU ───────────────────────────────────────────────────
-    wire [TAG_WIDTH-1:0]   tmu_in_tag   = pcie_data_in[TAG_WIDTH-1:0];
-    wire [DATA_WIDTH-1:0]  tmu_in_data  = pcie_data_in[TAG_WIDTH+DATA_WIDTH-1:TAG_WIDTH];
-    wire                   tmu_in_valid = pcie_valid;
-    wire                   tmu_in_ready;
-    wire [TAG_WIDTH-1:0]   tmu_fire_tag;
-    wire [DATA_WIDTH-1:0]  tmu_fire_data_a, tmu_fire_data_b;
-    wire                   tmu_fire_valid;
+// ===========================================================================
+// 1.  Divisor de clock RTL puro  100 MHz → 25 MHz  (÷4)
+//     Sin IP externa — funciona directo en síntesis sin Clocking Wizard
+//     25 MHz no es exactamente 25.175 MHz pero el timing VGA es tolerable
+// ===========================================================================
+reg [1:0] clk_div;
+reg       clk_pixel_r;
 
-    token_matching_unit #(
-        .NUM_SLOTS(TMU_SLOTS), .TAG_WIDTH(TAG_WIDTH), .DATA_WIDTH(DATA_WIDTH)
-    ) u_tmu (
-        .clk(clk), .rst_n(rst_n),
-        .in_tag(tmu_in_tag), .in_data(tmu_in_data),
-        .in_valid(tmu_in_valid), .in_ready(tmu_in_ready),
-        .fire_tag(tmu_fire_tag),
-        .fire_data_a(tmu_fire_data_a), .fire_data_b(tmu_fire_data_b),
-        .fire_valid(tmu_fire_valid), .occupancy()
-    );
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        clk_div     <= 2'd0;
+        clk_pixel_r <= 1'b0;
+    end else begin
+        if (clk_div == 2'd1) begin
+            clk_div     <= 2'd0;
+            clk_pixel_r <= ~clk_pixel_r;
+        end else begin
+            clk_div <= clk_div + 2'd1;
+        end
+    end
+end
 
-    // ── Shader Cluster ────────────────────────────────────────
-    wire [DATA_WIDTH-1:0] shader_out;
-    wire                  shader_valid;
-    wire [15:0]           shader_exec_count;
+wire clk_pixel = clk_pixel_r;
+wire pll_locked = rst_n;          // sin PLL real — locked = ~reset
 
-    shader_cluster #(
-        .NUM_CU(4), .DATA_WIDTH(DATA_WIDTH), .NUM_WARPS(4)
-    ) u_shader (
-        .clk(clk), .rst_n(rst_n),
-        .data_in(tmu_fire_data_a), .data_in_b(tmu_fire_data_b),
-        .in_valid(tmu_fire_valid),
-        .mvp_m00(mvp_m00), .mvp_m01(mvp_m01),
-        .mvp_m02(mvp_m02), .mvp_m03(mvp_m03),
-        .mvp_m10(mvp_m10), .mvp_m11(mvp_m11),
-        .mvp_m12(mvp_m12), .mvp_m13(mvp_m13),
-        .mvp_m20(mvp_m20), .mvp_m21(mvp_m21),
-        .mvp_m22(mvp_m22), .mvp_m23(mvp_m23),
-        .mvp_m30(mvp_m30), .mvp_m31(mvp_m31),
-        .mvp_m32(mvp_m32), .mvp_m33(mvp_m33),
-        .mvp_load(mvp_load),
-        .data_out(shader_out), .out_valid(shader_valid),
-        .exec_count_out(shader_exec_count)
-    );
+wire sys_rst = ~rst_n;            // reset activo alto
 
-    // ── Budget Controller ─────────────────────────────────────
-    wire budget_ok;
-    wire rt_active = shader_valid & budget_ok;
+// ===========================================================================
+// 2.  Estímulos internos  —  sin pines externos
+// ===========================================================================
 
-    budget_controller #(
-        .CLK_MHZ(TARGET_FREQ_MHZ), .RT_PERCENT(RT_PERCENT)
-    ) u_budget (
-        .clk(clk), .rst_n(rst_n),
-        .frame_start(frame_start), .rt_active(rt_active),
-        .budget_ok(budget_ok), .rt_load(rt_load)
-    );
+// ── Triángulo fijo (no requiere host) ──────────────────────────────────────
+localparam [10:0] V0X = 11'd320, V0Y = 11'd60;
+localparam [10:0] V1X = 11'd120, V1Y = 11'd420;
+localparam [10:0] V2X = 11'd520, V2Y = 11'd420;
 
-    // ── Three Tracing Unit ────────────────────────────────────
-    wire [DATA_WIDTH-1:0] tt_out;
-    wire                  tt_valid;
+// Colores R8G8B8A8: rojo, verde, azul
+localparam [31:0] C0 = 32'hFF0000FF;
+localparam [31:0] C1 = 32'h00FF00FF;
+localparam [31:0] C2 = 32'h0000FFFF;
+localparam [31:0] Z_ZERO = 32'h0;
 
-    three_tracing_unit #(
-        .BVH_DEPTH(TT_BVH_DEPTH), .RAY_BUDGET(TT_RAY_BUDGET),
-        .DATA_WIDTH(DATA_WIDTH), .NUM_RT_UNITS(TT_NUM_RT_UNITS)
-    ) u_tt (
-        .clk(clk), .rst_n(rst_n),
-        .frag_in(shader_out), .in_valid(shader_valid),
-        .budget_ok(budget_ok), .sram_ack(1'b1),
-        .frame_out(tt_out), .out_valid(tt_valid)
-    );
+// ── Pulso rast_start: dispara una vez al arrancar ──────────────────────────
+reg [1:0] start_state;
+reg       rast_start_r;
 
-    // ── Triangle Rasterizer ───────────────────────────────────
-    wire [DATA_WIDTH-1:0] rast_token;
-    wire                  rast_token_valid, rast_busy;
+always @(posedge clk_pixel or negedge rst_n) begin
+    if (!rst_n) begin
+        start_state  <= 2'd0;
+        rast_start_r <= 1'b0;
+    end else begin
+        case (start_state)
+            2'd0: begin rast_start_r <= 1'b1; start_state <= 2'd1; end
+            2'd1: begin rast_start_r <= 1'b0; start_state <= 2'd2; end
+            default: rast_start_r <= 1'b0;
+        endcase
+    end
+end
 
-    triangle_rasterizer #(
-        .DATA_WIDTH(DATA_WIDTH), .SCREEN_W(SCREEN_W), .SCREEN_H(SCREEN_H)
-    ) u_rast (
-        .clk(clk), .rst_n(rst_n),
-        .v0_x(v0_x), .v0_y(v0_y),
-        .v1_x(v1_x), .v1_y(v1_y),
-        .v2_x(v2_x), .v2_y(v2_y),
-        .c0(c0), .c1(c1), .c2(c2),
-        .z0(z0), .z1(z1), .z2(z2),
-        .start(rast_start), .busy(rast_busy),
-        .token_out(rast_token), .token_valid(rast_token_valid),
-        .token_ready(1'b1),
-        .pixels_emitted(rast_pixels_emitted),
-        .pixels_skipped(rast_pixels_skipped),
-        .frame_done(rast_frame_done)
-    );
+// ── MVP Identidad  (IEEE 754: 1.0 = 32'h3F800000) ─────────────────────────
+localparam [31:0] FP_ONE  = 32'h3F800000;
+localparam [31:0] FP_ZERO = 32'h00000000;
 
-    // ── Tile Arbiter ──────────────────────────────────────────
-    wire [DATA_WIDTH-1:0] tile_in    = rast_token_valid ? rast_token : tt_out;
-    wire                  tile_valid = rast_token_valid | tt_valid;
-    wire [31:0]  tile_color;
-    wire [18:0]  tile_addr;
-    wire         tile_write;
-    wire         tile_ready;
-    wire [15:0]  tile_written, tile_discarded;
+// ===========================================================================
+// 3.  Instancia del núcleo GPU
+// ===========================================================================
+wire [127:0] fb_color_wide;
+wire [255:0] pcie_data_zero = 256'h0;  // FIX: Vivado rejects >32-bit literals in port connections
+wire [31:0]  fb_color_w;
+wire [18:0]  fb_addr_w;
+wire         fb_write_w;
+wire         frame_valid_w;
+wire         rast_done_w;
+wire         mvu_rdy_w;
 
-    tile_arbiter #(
-        .DATA_WIDTH(DATA_WIDTH), .SCREEN_W(SCREEN_W), .SCREEN_H(SCREEN_H)
-    ) u_tile (
-        .clk(clk), .rst_n(rst_n),
-        .frag_in(tile_in), .frag_valid(tile_valid),
-        .frag_ready(tile_ready),
-        .pixel_color(tile_color), .pixel_addr(tile_addr),
-        .pixel_write(tile_write),
-        .fragments_written(tile_written),
-        .fragments_discarded(tile_discarded)
-    );
+novagpu_core #(
+    .DATA_WIDTH      (128),
+    .TAG_WIDTH       (16),
+    .TMU_SLOTS       (64),
+    .MVU_REAL_FRAMES (2),
+    .MVU_GEN_FRAMES  (4),
+    .TARGET_FREQ_MHZ (100),
+    .NUM_ARB_PORTS   (4),
+    .TT_BVH_DEPTH    (8),
+    .TT_RAY_BUDGET   (8),
+    .TT_NUM_RT_UNITS (4),
+    .RT_PERCENT      (25),
+    .SCREEN_W        (640),
+    .SCREEN_H        (480)
+) u_gpu (
+    .clk             (clk_pixel),
+    .rst_n           (~sys_rst),
 
-    // ── SRAM Integrada ────────────────────────────────────────
-    wire [DATA_WIDTH-1:0] sram_a_rdata, sram_b_rdata;
-    wire                  sram_a_ack, sram_b_ack;
+    // PCIe stub — idle
+    .pcie_data_in    (pcie_data_zero),
+    .pcie_data_out   (),
+    .pcie_valid      (1'b0),
+    .pcie_ready      (),
 
-    sram_integrated #(.DATA_WIDTH(DATA_WIDTH)) u_sram (
-        .clk(clk), .rst_n(rst_n),
-        .a_addr({13'b0, tile_addr}),
-        .a_wdata({{(DATA_WIDTH-32){1'b0}}, tile_color}),
-        .a_req(tile_write), .a_wen(tile_write),
-        .a_rdata(sram_a_rdata), .a_ack(sram_a_ack),
-        .b_addr({13'b0, tile_addr}),
-        .b_wdata({{(DATA_WIDTH-32){1'b0}}, tile_color}),
-        .b_req(tile_write), .b_wen(1'b0),
-        .b_rdata(sram_b_rdata), .b_ack(sram_b_ack),
-        .axi_awready(axi_awready), .axi_wready(axi_wready),
-        .axi_arready(axi_arready), .axi_rvalid(axi_rvalid),
-        .axi_rdata(axi_rdata),
-        .hit_count(sram_hits), .miss_count(sram_misses),
-        .conflict_o(),
-        .bw_instrmem(bw_instrmem), .bw_bvhmem(bw_bvhmem),
-        .bw_texmem(bw_texmem), .bw_framebuf(bw_framebuf)
-    );
+    // Motion vectors — nulos
+    .mv_x            (16'h0),
+    .mv_y            (16'h0),
+    .mv_valid        (1'b0),
+    .frame_start     (1'b0),
 
-    // ── MVU ───────────────────────────────────────────────────
-    wire mvu_ready;
+    // Triángulo fijo
+    .v0_x (V0X), .v0_y (V0Y),
+    .v1_x (V1X), .v1_y (V1Y),
+    .v2_x (V2X), .v2_y (V2Y),
+    .c0   (C0),  .c1   (C1),  .c2 (C2),
+    .z0   (Z_ZERO), .z1 (Z_ZERO), .z2 (Z_ZERO),
+    .rast_start (rast_start_r),
 
-    mvu #(
-        .REAL_FRAMES(MVU_REAL_FRAMES), .GEN_FRAMES(MVU_GEN_FRAMES),
-        .DATA_WIDTH(DATA_WIDTH)
-    ) u_mvu (
-        .clk(clk), .rst_n(rst_n),
-        .frame_in(tt_out), .in_valid(tt_valid),
-        .mv_x(mv_x), .mv_y(mv_y), .mv_valid(mv_valid),
-        .frame_out(frame_out), .frame_valid(frame_valid),
-        .frame_count(frame_count), .mvu_ready(mvu_ready)
-    );
+    // MVP identidad
+    .mvp_m00(FP_ONE),  .mvp_m01(FP_ZERO), .mvp_m02(FP_ZERO), .mvp_m03(FP_ZERO),
+    .mvp_m10(FP_ZERO), .mvp_m11(FP_ONE),  .mvp_m12(FP_ZERO), .mvp_m13(FP_ZERO),
+    .mvp_m20(FP_ZERO), .mvp_m21(FP_ZERO), .mvp_m22(FP_ONE),  .mvp_m23(FP_ZERO),
+    .mvp_m30(FP_ZERO), .mvp_m31(FP_ZERO), .mvp_m32(FP_ZERO), .mvp_m33(FP_ONE),
+    .mvp_load (1'b1),
 
-    // ── Salidas ───────────────────────────────────────────────
-    assign pcie_ready    = tmu_in_ready & mvu_ready;
-    assign pcie_data_out = {{(256-DATA_WIDTH){1'b0}}, frame_out};
-    assign fb_color      = tile_color;
-    assign fb_addr       = tile_addr;
-    assign fb_write      = tile_write;
-    assign mvu_ready_out = mvu_ready;
-    assign budget_ok_out = budget_ok;
+    // Framebuffer write
+    .fb_color        (fb_color_w),
+    .fb_addr         (fb_addr_w),
+    .fb_write        (fb_write_w),
+
+    // Outputs no usados en demo (tied off)
+    .frame_out       (),
+    .frame_valid     (frame_valid_w),
+    .frame_count     (),
+    .mvu_ready_out   (mvu_rdy_w),
+    .rt_load         (),
+    .budget_ok_out   (),
+    .sram_hits       (),
+    .sram_misses     (),
+    .axi_awready     (),
+    .axi_wready      (),
+    .axi_arready     (),
+    .axi_rvalid      (),
+    .axi_rdata       (),
+    .bw_instrmem     (),
+    .bw_bvhmem       (),
+    .bw_texmem       (),
+    .bw_framebuf     (),
+    .rast_pixels_emitted (),
+    .rast_pixels_skipped (),
+    .rast_frame_done     (rast_done_w)
+);
+
+// ===========================================================================
+// 4.  Framebuffer en BRAM  (640×480 × 12-bit)
+//     Puerto A: escritura GPU
+//     Puerto B: lectura VGA
+// ===========================================================================
+localparam FB_SIZE = 640 * 480;   // 307200
+
+(* ram_style = "block" *)
+reg [11:0] framebuf [0:FB_SIZE-1];
+
+// Escritura desde GPU — toma bits [11:0] del fb_color
+always @(posedge clk_pixel) begin
+    if (fb_write_w && (fb_addr_w < 19'd307200))
+        framebuf[fb_addr_w] <= fb_color_w[11:0];
+end
+
+// ===========================================================================
+// 5.  VGA Controller  640×480 @ 60 Hz
+//     Pixel clock nominal: 25.175 MHz
+// ===========================================================================
+// Timing VESA
+localparam HA = 640, HFP = 16,  HS = 96,  HBP = 48;   // H total = 800
+localparam VA = 480, VFP = 10,  VS = 2,   VBP = 33;   // V total = 525
+localparam HT = HA + HFP + HS + HBP;
+localparam VT = VA + VFP + VS + VBP;
+
+reg [9:0] hcnt, vcnt;
+
+always @(posedge clk_pixel or negedge rst_n) begin
+    if (!rst_n) begin
+        hcnt <= 10'd0; vcnt <= 10'd0;
+    end else begin
+        if (hcnt == HT - 1) begin
+            hcnt <= 10'd0;
+            vcnt <= (vcnt == VT - 1) ? 10'd0 : vcnt + 10'd1;
+        end else
+            hcnt <= hcnt + 10'd1;
+    end
+end
+
+wire h_vis = (hcnt < HA);
+wire v_vis = (vcnt < VA);
+wire vis   = h_vis & v_vis;
+
+// Sync pulsos (negativos)
+assign vga_hsync = ~((hcnt >= HA + HFP) && (hcnt < HA + HFP + HS));
+assign vga_vsync = ~((vcnt >= VA + VFP) && (vcnt < VA + VFP + VS));
+
+// Lectura framebuffer — pipeline de 1 ciclo
+// FIX: explicit $unsigned cast avoids Vivado inferring signed 19x19 multiplier
+wire [18:0] rd_addr = vis ? ($unsigned(vcnt) * 19'd640 + $unsigned(hcnt)) : 19'd0;
+reg  [11:0] px;
+
+always @(posedge clk_pixel or negedge rst_n) begin
+    if (!rst_n) px <= 12'd0;
+    else        px <= framebuf[rd_addr];
+end
+
+assign vga_r = vis ? px[11:8] : 4'b0;
+assign vga_g = vis ? px[7:4]  : 4'b0;
+assign vga_b = vis ? px[3:0]  : 4'b0;
+
+// ===========================================================================
+// 6.  LEDs
+// ===========================================================================
+assign led[0] = pll_locked;
+assign led[1] = frame_valid_w;
+assign led[2] = rast_done_w;
+assign led[3] = mvu_rdy_w;
 
 endmodule
