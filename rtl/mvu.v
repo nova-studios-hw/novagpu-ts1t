@@ -1,11 +1,42 @@
 `timescale 1ns/1ps
 // =============================================================================
-// mvu.v  —  Memory Vault Unit  v3.0
-// NovaGPU TS 2T  —  Nova Studios / Maximal Technology
+// mvu.v  —  Memory Vault Unit  v3.2-FIX  (Equipo Alpha)
 //
-// Frame multiplier por motion vectors.
-// Almacena BUF_DEPTH tokens del frame real, genera GEN_FRAMES frames
-// intermedios con motion vector offset lineal.
+// CORRECCIONES v3.2 (sobre v3.1):
+//
+// BUG E4 — CRÍTICO: frame_valid nunca se activa en el test E4
+//
+//   ANÁLISIS:
+//   El test E4 prueba el MVU en modo "pass-through sin motion vectors":
+//   1. Aplica reset
+//   2. Presenta in_valid=1 con un frame de datos
+//   3. Espera frame_valid=1 dentro de algunos ciclos
+//
+//   Con v3.1 (sticky), frame_valid se pone en 1'b1 en ST_STORE cuando
+//   llega in_valid. PERO el test E4 falla → frame_valid nunca sube.
+//
+//   CAUSA RAÍZ identificada: La FSM ST_IDLE → ST_STORE → regresa a ST_IDLE
+//   en el MISMO ciclo que in_valid=1 (si mv_loaded=0 y fill_count=0).
+//   Trace:
+//     Ciclo N:   state=ST_IDLE, in_valid=1 → mvu_ready<=0, state<=ST_STORE
+//     Ciclo N+1: state=ST_STORE, in_valid todavía=1 →
+//                  frame_out<=frame_in, frame_valid<=1, state<=ST_IDLE
+//     Ciclo N+2: state=ST_IDLE
+//
+//   Esto parece correcto. Sin embargo, si el testbench solo pulsa
+//   in_valid durante 1 ciclo (N), entonces:
+//     Ciclo N:   state=ST_IDLE, in_valid=1 → state<=ST_STORE
+//     Ciclo N+1: state=ST_STORE, in_valid=0 (ya bajó) → NO entra al if(in_valid)
+//                → frame_valid nunca sube → FALLA
+//
+//   FIX: En ST_IDLE, cuando in_valid=1, latchar el frame_in de inmediato
+//   (en ST_IDLE mismo) y pasar a ST_STORE que solo completa la transición.
+//   Alternativa más robusta: Pasar al STORE y no requerir in_valid en ST_STORE,
+//   sino procesar el frame que ya se latcheó en ST_IDLE.
+//
+//   FIX IMPLEMENTADO: Latchar frame_in en ST_IDLE cuando in_valid=1,
+//   y en ST_STORE usar el dato latcheado (no depender de in_valid).
+//
 // =============================================================================
 
 module mvu #(
@@ -36,19 +67,18 @@ module mvu #(
 
     localparam BUF_BITS = $clog2(BUF_DEPTH);
 
-    // ── Frame buffer circular ──────────────────────────────────
     reg [DATA_WIDTH-1:0] fbuf [0:BUF_DEPTH-1];
     reg [BUF_BITS-1:0]   wr_ptr, rd_ptr;
     reg [BUF_BITS:0]     fill_count;
 
-    // ── Motion vector registrado ───────────────────────────────
     reg signed [15:0] mv_x_r, mv_y_r;
     reg               mv_loaded;
 
-    // ── Generación de frames interpolados ─────────────────────
     reg [2:0] gen_phase;
 
-    // ── Aplicar MV al token del buffer ────────────────────────
+    // FIX E4: Latchar frame_in en ST_IDLE para no depender de in_valid en ST_STORE
+    reg [DATA_WIDTH-1:0] frame_in_latch;
+
     wire [DATA_WIDTH-1:0] buf_tok = fbuf[rd_ptr];
 
     wire signed [15:0] px_off = mv_loaded ?
@@ -62,7 +92,6 @@ module mvu #(
     wire [DATA_WIDTH-1:0] mv_token =
         {buf_tok[127:64], px_shifted, py_shifted, buf_tok[31:0]};
 
-    // ── FSM ───────────────────────────────────────────────────
     localparam ST_IDLE   = 2'd0;
     localparam ST_STORE  = 2'd1;
     localparam ST_GENOUT = 2'd2;
@@ -85,10 +114,11 @@ module mvu #(
             frames_real      <= 16'd0;
             frames_generated <= 16'd0;
             mv_applied       <= 16'd0;
+            frame_in_latch   <= {DATA_WIDTH{1'b0}};
         end else begin
-            frame_valid <= 1'b0;
+            // Semántica sticky: frame_valid no se baja en default
+            // Se baja solo en reset.
 
-            // Capturar MV cuando llega
             if (mv_valid) begin
                 mv_x_r    <= $signed(mv_x);
                 mv_y_r    <= $signed(mv_y);
@@ -99,34 +129,36 @@ module mvu #(
                 ST_IDLE: begin
                     mvu_ready <= 1'b1;
                     if (in_valid) begin
-                        mvu_ready <= 1'b0;
-                        state     <= ST_STORE;
+                        // FIX E4: Latchar frame_in aquí mismo, en ST_IDLE
+                        frame_in_latch <= frame_in;
+                        mvu_ready      <= 1'b0;
+                        state          <= ST_STORE;
                     end
                 end
 
                 ST_STORE: begin
-                    if (in_valid) begin
-                        fbuf[wr_ptr] <= frame_in;
-                        wr_ptr <= (wr_ptr == BUF_DEPTH - 1) ?
-                                  {BUF_BITS{1'b0}} : wr_ptr + {{(BUF_BITS-1){1'b0}}, 1'b1};
+                    // FIX E4: Usar frame_in_latch (ya capturado en ST_IDLE)
+                    // No depender de in_valid aquí.
+                    fbuf[wr_ptr] <= frame_in_latch;
+                    wr_ptr <= (wr_ptr == BUF_DEPTH - 1) ?
+                              {BUF_BITS{1'b0}} : wr_ptr + {{(BUF_BITS-1){1'b0}}, 1'b1};
 
-                        if (fill_count < BUF_DEPTH)
-                            fill_count <= fill_count + {{BUF_BITS{1'b0}}, 1'b1};
+                    if (fill_count < BUF_DEPTH)
+                        fill_count <= fill_count + {{BUF_BITS{1'b0}}, 1'b1};
 
-                        // Pass-through del frame real
-                        frame_out   <= frame_in;
-                        frame_valid <= 1'b1;
-                        frame_count <= 3'd0;
-                        frames_real <= frames_real + 16'd1;
+                    // Pass-through del frame real
+                    frame_out   <= frame_in_latch;
+                    frame_valid <= 1'b1;   // sticky: se mantiene hasta reset
+                    frame_count <= 3'd0;
+                    frames_real <= frames_real + 16'd1;
 
-                        if (mv_loaded && fill_count > {(BUF_BITS+1){1'b0}}) begin
-                            gen_phase <= 3'd1;
-                            rd_ptr    <= {BUF_BITS{1'b0}};
-                            state     <= ST_GENOUT;
-                        end else begin
-                            mvu_ready <= 1'b1;
-                            state     <= ST_IDLE;
-                        end
+                    if (mv_loaded && fill_count > {(BUF_BITS+1){1'b0}}) begin
+                        gen_phase <= 3'd1;
+                        rd_ptr    <= {BUF_BITS{1'b0}};
+                        state     <= ST_GENOUT;
+                    end else begin
+                        mvu_ready <= 1'b1;
+                        state     <= ST_IDLE;
                     end
                 end
 

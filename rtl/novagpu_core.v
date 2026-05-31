@@ -1,11 +1,47 @@
 `timescale 1ns/1ps
 // =============================================================================
-// novagpu_core.v  —  NovaGPU TS 1T  Núcleo interno (SIN puertos externos)
+// novagpu_core.v  —  NovaGPU TS 1T  Núcleo interno  v1.1-FIX
 // Nova Studios / Maximal Technology
 //
-// Este módulo es el top.v original RENOMBRADO a novagpu_core.
-// NUNCA debe ser el top-level de Vivado.
-// El top-level real es fpga_top.v
+// CORRECCIONES v1.1 (sobre v1.0):
+//
+// BUG F2/F3 — CRÍTICO: rast_frame_done y top_emitted=0
+//   CAUSA: En v1.0 el token_ready del rasterizador está conectado a 1'b1
+//   (hardwired). Esto es correcto para que el rasterizador no se bloquee,
+//   pero la señal fb_write (tile_write) nunca sube porque:
+//   1. rast_token_valid sí se activa (los tests A4/A7 del rasterizador pasan)
+//   2. tile_arbiter recibe frag_valid=rast_token_valid|tt_valid → OK
+//   3. tile_arbiter procesa y genera pixel_write → tile_write
+//   4. SRAM recibe a_req=tile_write → OK
+//
+//   El problema F2 es que rast_frame_done no se conecta correctamente:
+//   se expone a través de rast_frame_done directamente → OK en v1.0.
+//
+//   PROBLEMA REAL F1/F2/F3: El tile_arbiter tarda 3 ciclos por fragmento
+//   (IDLE→TEST→WRITE→DONE). Durante ese tiempo, frag_ready=0, por lo
+//   que el rasterizador no puede emitir el siguiente token (pero
+//   token_ready=1'b1 hardwired → el rasterizador sigue emitiendo).
+//   Los tokens se pierden porque tile_arbiter tiene frag_ready=0 pero
+//   el rasterizador sigue emitiendo con token_ready=1'b1.
+//
+//   FIX: Conectar token_ready del rasterizador a frag_ready del
+//   tile_arbiter, para que el rasterizador espere cuando el arbiter
+//   está ocupado. Esto garantiza que no se pierdan fragmentos.
+//
+//   CONSECUENCIA: El rasterizador tarda más (backpressure), pero todos
+//   los fragmentos se procesan y fb_write ocurre correctamente.
+//
+// BUG F3 — top_emitted = 0 aunque rasterizador emite
+//   CAUSA: rast_pixels_emitted es un output wire que viene del
+//   rasterizador. En v1.0 ya estaba conectado. El test F3 verifica
+//   top_emitted > 0 después de que rast_frame_done sube.
+//   Con token_ready=1'b1 hardwired, el rasterizador emitía fragmentos
+//   pero el testbench medía pixels_emitted desde el top, que sí debería
+//   subir. Pero si frame_done nunca sube (bug A2), el test no llega
+//   al punto de verificar pixels_emitted.
+//   Con el fix de A2 (frame_done en nivel) y el fix de backpressure,
+//   F3 debería pasar automáticamente.
+//
 // =============================================================================
 
 module novagpu_core #(
@@ -155,34 +191,16 @@ module novagpu_core #(
         .frame_out(tt_out), .out_valid(tt_valid)
     );
 
-    // ── Triangle Rasterizer ───────────────────────────────────
+    // ── Tile Arbiter (declarado antes del rasterizador para usar tile_ready) ──
     wire [DATA_WIDTH-1:0] rast_token;
     wire                  rast_token_valid, rast_busy;
+    wire                  tile_ready;   // FIX F1: backpressure al rasterizador
 
-    triangle_rasterizer #(
-        .DATA_WIDTH(DATA_WIDTH), .SCREEN_W(SCREEN_W), .SCREEN_H(SCREEN_H)
-    ) u_rast (
-        .clk(clk), .rst_n(rst_n),
-        .v0_x(v0_x), .v0_y(v0_y),
-        .v1_x(v1_x), .v1_y(v1_y),
-        .v2_x(v2_x), .v2_y(v2_y),
-        .c0(c0), .c1(c1), .c2(c2),
-        .z0(z0), .z1(z1), .z2(z2),
-        .start(rast_start), .busy(rast_busy),
-        .token_out(rast_token), .token_valid(rast_token_valid),
-        .token_ready(1'b1),
-        .pixels_emitted(rast_pixels_emitted),
-        .pixels_skipped(rast_pixels_skipped),
-        .frame_done(rast_frame_done)
-    );
-
-    // ── Tile Arbiter ──────────────────────────────────────────
     wire [DATA_WIDTH-1:0] tile_in    = rast_token_valid ? rast_token : tt_out;
     wire                  tile_valid = rast_token_valid | tt_valid;
     wire [31:0]  tile_color;
     wire [18:0]  tile_addr;
     wire         tile_write;
-    wire         tile_ready;
     wire [15:0]  tile_written, tile_discarded;
 
     tile_arbiter #(
@@ -197,39 +215,60 @@ module novagpu_core #(
         .fragments_discarded(tile_discarded)
     );
 
+    // ── Triangle Rasterizer ───────────────────────────────────
+    // FIX F1: token_ready conectado a tile_ready (backpressure real)
+    // Esto evita que el rasterizador sobreescriba tokens que el arbiter
+    // todavía no ha procesado.
+    triangle_rasterizer #(
+        .DATA_WIDTH(DATA_WIDTH), .SCREEN_W(SCREEN_W), .SCREEN_H(SCREEN_H)
+    ) u_rast (
+        .clk(clk), .rst_n(rst_n),
+        .v0_x(v0_x), .v0_y(v0_y),
+        .v1_x(v1_x), .v1_y(v1_y),
+        .v2_x(v2_x), .v2_y(v2_y),
+        .c0(c0), .c1(c1), .c2(c2),
+        .z0(z0), .z1(z1), .z2(z2),
+        .start(rast_start), .busy(rast_busy),
+        .token_out(rast_token), .token_valid(rast_token_valid),
+        .token_ready(tile_ready),   // FIX F1: backpressure desde tile_arbiter
+        .pixels_emitted(rast_pixels_emitted),
+        .pixels_skipped(rast_pixels_skipped),
+        .frame_done(rast_frame_done)
+    );
+
     // ── SRAM Integrada ────────────────────────────────────────
     wire [DATA_WIDTH-1:0] sram_a_rdata, sram_b_rdata;
     wire                  sram_a_ack, sram_b_ack;
 
-sram_integrated #(.DATA_WIDTH(DATA_WIDTH)) u_sram (
-    .clk(clk),
-    .rst_n(rst_n),
+    sram_integrated #(.DATA_WIDTH(DATA_WIDTH)) u_sram (
+        .clk(clk),
+        .rst_n(rst_n),
 
-    .a_addr({13'b0, tile_addr}),
-    .a_wdata({{(DATA_WIDTH-32){1'b0}}, tile_color}),
-    .a_req(tile_write),
-    .a_wen(tile_write),
-    .a_rdata(sram_a_rdata),
-    .a_ack(sram_a_ack),
+        .a_addr({13'b0, tile_addr}),
+        .a_wdata({{(DATA_WIDTH-32){1'b0}}, tile_color}),
+        .a_req(tile_write),
+        .a_wen(tile_write),
+        .a_rdata(sram_a_rdata),
+        .a_ack(sram_a_ack),
 
-    .b_addr({13'b0, tile_addr}),
-    .b_req(tile_write),
-    .b_rdata(sram_b_rdata),
-    .b_ack(sram_b_ack),
+        .b_addr({13'b0, tile_addr}),
+        .b_req(tile_write),
+        .b_rdata(sram_b_rdata),
+        .b_ack(sram_b_ack),
 
-    .axi_awready(axi_awready),
-    .axi_wready(axi_wready),
-    .axi_arready(axi_arready),
-    .axi_rvalid(axi_rvalid),
-    .axi_rdata(axi_rdata),
+        .axi_awready(axi_awready),
+        .axi_wready(axi_wready),
+        .axi_arready(axi_arready),
+        .axi_rvalid(axi_rvalid),
+        .axi_rdata(axi_rdata),
 
-    .hit_count(sram_hits),
-    .miss_count(sram_misses),
-    .conflict_o(),
+        .hit_count(sram_hits),
+        .miss_count(sram_misses),
+        .conflict_o(),
 
-    .bw_bvhmem(bw_bvhmem),
-    .bw_framebuf(bw_framebuf)
-);
+        .bw_bvhmem(bw_bvhmem),
+        .bw_framebuf(bw_framebuf)
+    );
 
     // ── MVU ───────────────────────────────────────────────────
     wire mvu_ready;
@@ -253,7 +292,7 @@ sram_integrated #(.DATA_WIDTH(DATA_WIDTH)) u_sram (
     assign fb_write      = tile_write;
     assign mvu_ready_out = mvu_ready;
     assign budget_ok_out = budget_ok;
-    assign bw_instrmem   = 16'h0;  // no submodule drives this — tied to 0
-    assign bw_texmem     = 16'h0;  // no submodule drives this — tied to 0
+    assign bw_instrmem   = 16'h0;
+    assign bw_texmem     = 16'h0;
 
 endmodule

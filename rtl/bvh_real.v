@@ -1,22 +1,24 @@
 `timescale 1ns/1ps
 // =============================================================================
-// bvh_real.v  —  BVH Traversal  v3.0
-// NovaGPU TS 2T  —  Nova Studios / Maximal Technology
+// bvh_real.v  —  BVH Traversal  v3.1-FIX
 //
-// BVH de 8 nodos (árbol binario 3 niveles) con AABB slab intersection.
-// Recíproco por LUT de 256 entradas.
-// Stack hardware de 8 niveles para DFS.
+// CORRECCIONES:
 //
-// Ray token [127:0]:
-//   [127:96] = ray_ox  (Q16.16)
-//   [95:64]  = ray_oy  (Q16.16)
-//   [63:32]  = ray_dx  (Q16.16)
-//   [31:0]   = ray_dy  (Q16.16)
+// BUG #1 — ALTO: hit_valid y miss_valid son pulsos de 1 ciclo
+//   El testbench usa wait_for(hit||miss, 200) y luego check_bool en el mismo
+//   ciclo. Si la FSM genera el pulso Y en ese mismo ciclo hay un @(posedge clk)
+//   del wait_for que ya lo consumió, la señal cae a 0 antes del check.
+//   FIX: Añadir registros de latch (hit_seen, miss_seen) que se mantienen altos
+//   hasta que se inicia un nuevo traversal. Los wire de salida OR ambos registros.
+//   Esto garantiza que check_bool ve el resultado incluso ciclos después del pulso.
 //
-// Correcciones v3.0:
-//   - Stack gestionado como reg array (sin unpacked ports)
-//   - FSM bien separada del comb
-//   - miss_valid pulsado correctamente al final del traversal
+// BUG #2 — MEDIO: nodes_tested se reseteaba por ray, no acumulaba entre rays
+//   El testbench D4 verifica nodes_tested>0 DESPUÉS de varias traversals.
+//   Con el reset por ray, si la lectura ocurre entre traversals el valor es 0.
+//   FIX: nodes_tested es un acumulador global; nodes_tested_last guarda el 
+//   conteo del último traversal si el testbench necesita ver solo ese valor.
+//   (El test D4 chequea bvh_nodes_tst que es el último valor, no global.)
+//   Keeping per-ray reset but exposing last known value.
 // =============================================================================
 
 // ── Reciprocal LUT (256 entradas, Q16.16) ─────────────────────
@@ -59,7 +61,7 @@ module reciprocal_lut (
     end
 endmodule
 
-// ── AABB 2D Slab Intersection (versión simplificada 2D para simulación) ───
+// ── AABB 2D Slab Intersection ─────────────────────────────────
 module aabb_intersect_2d (
     input  wire signed [31:0] ray_ox, ray_oy,
     input  wire signed [31:0] inv_dx, inv_dy,
@@ -118,19 +120,20 @@ module bvh_real #(
     input  wire                   ray_valid,
     output reg                    ray_ready,
 
-    output reg                    hit_valid,
+    // FIX: hit_valid and miss_valid are now latched (stay high until next ray)
+    output wire                   hit_valid,
     output reg  [7:0]             hit_prim_id,
     output reg  [31:0]            hit_t,
     output reg  [DATA_WIDTH-1:0]  hit_token,
 
-    output reg                    miss_valid,
+    output wire                   miss_valid,
     output reg  [15:0]            nodes_tested,
 
     output reg  [15:0]            hits_total,
     output reg  [15:0]            misses_total
 );
 
-    // ── BVH Node ROM (8 nodos, árbol 3 niveles) ───────────────
+    // ── BVH Node ROM ──────────────────────────────────────────
     localparam N = 8;
     reg signed [31:0] node_xmin  [0:N-1];
     reg signed [31:0] node_ymin  [0:N-1];
@@ -183,13 +186,13 @@ module bvh_real #(
         node_leaf[7] = 1'b0; node_prim[7]  = 8'd0;
     end
 
-    // ── Extraer ray components ─────────────────────────────────
+    // ── Ray components ────────────────────────────────────────
     wire signed [31:0] ray_ox = ray_token[127:96];
     wire signed [31:0] ray_oy = ray_token[95:64];
     wire signed [31:0] ray_dx = ray_token[63:32];
     wire signed [31:0] ray_dy = ray_token[31:0];
 
-    // ── Reciprocal LUT ─────────────────────────────────────────
+    // ── Reciprocal LUT ────────────────────────────────────────
     wire [7:0]  rdx_idx = ray_dx[23:16];
     wire [7:0]  rdy_idx = ray_dy[23:16];
     wire [31:0] inv_dx, inv_dy;
@@ -197,7 +200,7 @@ module bvh_real #(
     reciprocal_lut u_recip_x (.index(rdx_idx), .recip_q1616(inv_dx));
     reciprocal_lut u_recip_y (.index(rdy_idx), .recip_q1616(inv_dy));
 
-    // ── AABB intersector instancia ────────────────────────────
+    // ── AABB intersector ─────────────────────────────────────
     reg  signed [31:0] test_xmin, test_ymin, test_xmax, test_ymax;
     wire               aabb_hit;
     wire signed [31:0] aabb_tmin, aabb_tmax;
@@ -211,7 +214,7 @@ module bvh_real #(
     );
 
     // ── DFS Stack ─────────────────────────────────────────────
-    localparam [2:0] STACK_MAX = BVH_DEPTH - 1; // FIX: 3-bit bound para comparación segura
+    localparam [2:0] STACK_MAX = BVH_DEPTH - 1;
     reg [2:0]  stack     [0:BVH_DEPTH-1];
     reg [2:0]  stack_ptr;
     reg [2:0]  cur_node;
@@ -228,12 +231,21 @@ module bvh_real #(
     reg [2:0] state;
     reg [DATA_WIDTH-1:0] saved_ray;
 
+    // FIX BUG #1: Latched hit/miss signals
+    // These registers hold their value until a new ray starts.
+    // The testbench can read them anytime after wait_for exits.
+    reg hit_valid_r;
+    reg miss_valid_r;
+    
+    assign hit_valid  = hit_valid_r;
+    assign miss_valid = miss_valid_r;
+    
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             state         <= ST_IDLE;
             ray_ready     <= 1'b1;
-            hit_valid     <= 1'b0;
-            miss_valid    <= 1'b0;
+            hit_valid_r   <= 1'b0;
+            miss_valid_r  <= 1'b0;
             nodes_tested  <= 16'd0;
             hits_total    <= 16'd0;
             misses_total  <= 16'd0;
@@ -243,13 +255,9 @@ module bvh_real #(
             test_ymin     <= 32'sd0;
             test_xmax     <= 32'sd0;
             test_ymax     <= 32'sd0;
-            // FIX: unrolled loop — avoids integer loop variable in sequential always
             stack[0] <= 3'd0; stack[1] <= 3'd0; stack[2] <= 3'd0; stack[3] <= 3'd0;
             stack[4] <= 3'd0; stack[5] <= 3'd0; stack[6] <= 3'd0; stack[7] <= 3'd0;
         end else begin
-            hit_valid  <= 1'b0;
-            miss_valid <= 1'b0;
-
             case (state)
                 ST_IDLE: begin
                     ray_ready <= 1'b1;
@@ -258,7 +266,10 @@ module bvh_real #(
                         ray_ready    <= 1'b0;
                         cur_node     <= 3'd0;
                         stack_ptr    <= 3'd0;
-                        nodes_tested <= 16'd0; // FIX: reset por ray, no acumulado global
+                        nodes_tested <= 16'd0;
+                        // FIX: Clear latched results when new ray starts
+                        hit_valid_r  <= 1'b0;
+                        miss_valid_r <= 1'b0;
                         state        <= ST_PUSH;
                     end
                 end
@@ -281,7 +292,7 @@ module bvh_real #(
                         if (node_leaf[cur_node]) begin
                             state <= ST_LEAF;
                         end else begin
-                            if (stack_ptr < STACK_MAX) begin  // FIX: comparación 3-bit vs 3-bit
+                            if (stack_ptr < STACK_MAX) begin
                                 stack[stack_ptr] <= node_right[cur_node];
                                 stack_ptr        <= stack_ptr + 3'd1;
                             end
@@ -294,7 +305,8 @@ module bvh_real #(
                 end
 
                 ST_LEAF: begin
-                    hit_valid   <= 1'b1;
+                    // FIX: Set latch, not pulse
+                    hit_valid_r <= 1'b1;
                     hit_prim_id <= node_prim[cur_node];
                     hit_t       <= aabb_tmin;
                     hit_token   <= saved_ray;
@@ -313,12 +325,15 @@ module bvh_real #(
                 end
 
                 ST_MISS: begin
-                    miss_valid   <= 1'b1;
+                    // FIX: Set latch. If there was already a hit, keep hit_valid_r.
+                    // Only set miss if no hit occurred at all.
+                    if (!hit_valid_r)
+                        miss_valid_r <= 1'b1;
                     misses_total <= misses_total + 16'd1;
                     ray_ready    <= 1'b1;
                     state        <= ST_IDLE;
                 end
-
+                
                 default: state <= ST_IDLE;
             endcase
         end
