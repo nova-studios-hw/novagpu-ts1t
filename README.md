@@ -159,6 +159,16 @@ Example output:
 
 frame.ppm
 
+
+Execution commands
+Project location:
+cd [your project location]
+
+Verilog build command
+iverilog -g2012 -o novagpu_sim sim/tb_novagpu_v12.v rtl/*.v
+
+Test
+vvp novagpu_sim
 ---
 
 # Roadmap
