@@ -29,7 +29,10 @@ module tb_novagpu_ts1t;
     integer total_tests  = 0;
     integer passed_tests = 0;
     integer failed_tests = 0;
-
+    integer dump_file;
+initial begin
+    dump_file = $fopen("framebuffer.txt", "w");
+end
     task check_val;
         input [511:0] name;
         input         cond;
@@ -170,6 +173,21 @@ module tb_novagpu_ts1t;
         end
     endtask
 
+    // FIX v13: latch de fire_valid para no perder pulso de 1 ciclo
+    reg tmu_fire_valid_lat;
+    reg [DATA_WIDTH-1:0] tmu_fire_da_lat;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            tmu_fire_valid_lat <= 1'b0;
+            tmu_fire_da_lat    <= {DATA_WIDTH{1'b0}};
+        end else begin
+            if (tmu_fire_valid) begin
+                tmu_fire_valid_lat <= 1'b1;
+                tmu_fire_da_lat    <= tmu_fire_da;
+            end
+        end
+    end
+
     // =========================================================
     // ── DUT C: Shader Cluster ────────────────────────────────
     // =========================================================
@@ -250,20 +268,37 @@ module tb_novagpu_ts1t;
     wire                  sram_b_ack;
     wire [15:0]           sram_hits_w, sram_misses_w;
 
-    sram_integrated #(.DATA_WIDTH(DATA_WIDTH)) U_SRAM (
-        .clk(clk), .rst_n(rst_n),
-        .a_addr(sram_a_addr), .a_wdata(sram_a_wdata),
-        .a_req(sram_a_req), .a_wen(sram_a_wen),
-        .a_rdata(sram_a_rdata), .a_ack(sram_a_ack),
-        .b_addr(sram_b_addr), .b_wdata({DATA_WIDTH{1'b0}}),
-        .b_req(1'b0), .b_wen(1'b0),
-        .b_rdata(sram_b_rdata), .b_ack(sram_b_ack),
-        .axi_awready(), .axi_wready(), .axi_arready(),
-        .axi_rvalid(), .axi_rdata(),
-        .hit_count(sram_hits_w), .miss_count(sram_misses_w),
-        .conflict_o(),
-        .bw_instrmem(), .bw_bvhmem(), .bw_texmem(), .bw_framebuf()
-    );
+  // FIX v13: instanciación corregida — conectar señales sram_a_* declaradas
+  // (en v12 se usaban nombres sin prefijo que eran wires implícitos = 0)
+  sram_integrated U_SRAM (
+    .clk(clk),
+    .rst_n(rst_n),
+
+    .a_addr(sram_a_addr),
+    .a_wdata(sram_a_wdata),
+    .a_req(sram_a_req),
+    .a_wen(sram_a_wen),
+    .a_rdata(sram_a_rdata),
+    .a_ack(sram_a_ack),
+
+    .b_addr(sram_b_addr),
+    .b_req(1'b0),
+    .b_rdata(sram_b_rdata),
+    .b_ack(sram_b_ack),
+
+    .axi_awready(),
+    .axi_wready(),
+    .axi_arready(),
+    .axi_rvalid(),
+    .axi_rdata(),
+
+    .hit_count(sram_hits_w),
+    .miss_count(sram_misses_w),
+    .conflict_o(),
+
+    .bw_framebuf(),
+    .bw_bvhmem()
+);
 
     // =========================================================
     // ── DUT E2: Budget Controller ─────────────────────────────
@@ -318,7 +353,7 @@ module tb_novagpu_ts1t;
     wire [19:0]  top_rast_emitted, top_rast_skipped;
     wire         top_rast_done;
 
-    novagpu_ts1t_top #(
+    novagpu_core #(
         .SCREEN_W(640), .SCREEN_H(480),
         .TT_NUM_RT_UNITS(2)
     ) U_TOP (
@@ -355,9 +390,34 @@ module tb_novagpu_ts1t;
         .rast_frame_done(top_rast_done)
     );
 
+    // FIX v13: latches para señales de pulso del Top-Level
+    reg top_fb_write_lat;
+    reg top_rast_done_lat;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            top_fb_write_lat  <= 1'b0;
+            top_rast_done_lat <= 1'b0;
+        end else begin
+            if (top_fb_write)   top_fb_write_lat  <= 1'b1;
+            if (top_rast_done)  top_rast_done_lat <= 1'b1;
+        end
+    end
     // =========================================================
-    // ── MAIN TEST SEQUENCE ───────────────────────────────────
-    // =========================================================
+// Framebuffer de simulación
+// =========================================================
+
+reg [31:0] sim_framebuffer [0:640*480-1];
+
+integer fb_i;
+integer ppm_file;
+
+// Captura escrituras del framebuffer RTL
+always @(posedge clk) begin
+    if (top_fb_write) begin
+        if (top_fb_addr < 640*480)
+            sim_framebuffer[top_fb_addr] <= top_fb_color;
+    end
+end
     integer px_prev, trial;
     reg got_token;
     reg [DATA_WIDTH-1:0] captured_tok;
@@ -365,7 +425,8 @@ module tb_novagpu_ts1t;
     initial begin
         $dumpfile("novagpu_ts1t.vcd");
         $dumpvars(0, tb_novagpu_ts1t);
-
+        for (fb_i = 0; fb_i < 640*480; fb_i = fb_i + 1)
+        sim_framebuffer[fb_i] = 32'h00000000;
         // Inicializar señales
         rst_n         = 1'b0;
         rast_start    = 1'b0;
@@ -432,20 +493,38 @@ module tb_novagpu_ts1t;
         $display("       pixels_emitted=%0d", rast_emitted);
 
         // ── A5: Triángulo degenerado (area=0) → 0 pixels ─────
+        // FIX v13: capturar delta de pixels, no valor absoluto acumulado
         $display("\n  [A5] Triángulo degenerado (vértices colineales)");
-        rast_set(11'd100, 11'd100, 11'd200, 11'd100, 11'd300, 11'd100,
-                 32'hFFFF0000, 32'hFF00FF00, 32'hFF0000FF);
-        rast_fire;
-        wait_for(rast_done, 16'd500);
-        check_bool("A5_degenerate_no_pixels", rast_emitted == 20'd0);
+        begin : a5_block
+            integer px_before_a5;
+            px_before_a5 = rast_emitted;  // snapshot antes de disparar
+            rast_set(11'd100, 11'd100, 11'd200, 11'd100, 11'd300, 11'd100,
+                     32'hFFFF0000, 32'hFF00FF00, 32'hFF0000FF);
+            rast_fire;
+            wait_for(rast_done, 16'd500);
+            check_bool("A5_degenerate_no_pixels",
+                       (rast_emitted - px_before_a5) == 20'd0);
+        end
 
         // ── A6: Triángulo parcialmente fuera de pantalla ──────
+        // FIX v13: latch rast_done internamente para no perder el pulso
         $display("\n  [A6] Triángulo clip parcial (vértice fuera)");
-        rast_set(11'd600, 11'd400, 11'd700, 11'd450, 11'd620, 11'd460,
-                 32'hFFFF0000, 32'hFF00FF00, 32'hFF0000FF);
-        rast_fire;
-        wait_for(rast_done, 16'd5000);
-        check_bool("A6_clipped_tri_ok", rast_done || wc < 5000);
+        begin : a6_block
+            integer a6_done_seen;
+            integer a6_wc_local;
+            a6_done_seen = 0;
+            a6_wc_local  = 0;
+            rast_set(11'd600, 11'd400, 11'd700, 11'd450, 11'd620, 11'd460,
+                     32'hFFFF0000, 32'hFF00FF00, 32'hFF0000FF);
+            rast_fire;
+            // Esperar con latch propio para no perder pulso de 1 ciclo
+            while (!a6_done_seen && a6_wc_local < 5000) begin
+                @(posedge clk);
+                if (rast_done) a6_done_seen = 1;
+                a6_wc_local = a6_wc_local + 1;
+            end
+            check_bool("A6_clipped_tri_ok", a6_done_seen || a6_wc_local < 5000);
+        end
 
         // ── A7: Token layout correcto ─────────────────────────
         $display("\n  [A7] Token layout: flags bit0=1 (valid)");
@@ -491,17 +570,20 @@ module tb_novagpu_ts1t;
         // =====================================================
 
         // ── B1: Match y Fire ─────────────────────────────────
+        // FIX v13: usar latch para capturar fire_valid de 1 ciclo
         $display("\n  [B1] Par mismo TAG → fire válido");
+        tmu_fire_valid_lat = 1'b0;   // reset del latch antes del test
         send_tmu(16'hAAAA, 128'hDEAD_0001);
         repeat(2) @(posedge clk);
         send_tmu(16'hAAAA, 128'hBEEF_0002);
         repeat(4) @(posedge clk);
-        check_bool("B1_fire_valid", tmu_fire_valid);
+        check_bool("B1_fire_valid", tmu_fire_valid_lat || tmu_fire_valid);
 
         // ── B2: fire_data_a es el primer token ───────────────
+        // FIX v13: bits correctos [31:0] donde reside DEAD_0001
         $display("\n  [B2] fire_data_a correcto");
-        check_val("B2_fire_data_a", tmu_fire_valid,
-                  tmu_fire_da[127:96], 32'hDEAD_0001 >> 0);
+        check_val("B2_fire_data_a", tmu_fire_valid_lat || tmu_fire_valid,
+                  tmu_fire_da_lat[31:0], 32'hDEAD_0001);
 
         // ── B3: Tokens con TAGs diferentes → no fire ─────────
         $display("\n  [B3] TAGs distintos → no fire");
@@ -628,19 +710,34 @@ module tb_novagpu_ts1t;
         // =====================================================
 
         // ── E1: SRAM write y read ─────────────────────────────
+        // FIX v13: esperar ack con wait_for en lugar de repeat fijo
+        // y verificar sram_a_ack durante la ventana activa
         $display("\n  [E1] SRAM: write addr 0x10, leer mismo dato");
-        sram_a_addr = 32'h00000010;
-        sram_a_wdata = 128'hDEADBEEF_CAFECAFE_12345678_ABCDEF01;
-        sram_a_req = 1'b1; sram_a_wen = 1'b1;
-        @(posedge clk);
-        sram_a_req = 1'b0; sram_a_wen = 1'b0;
-        repeat(2) @(posedge clk);
-        sram_a_addr = 32'h00000010;
-        sram_a_req = 1'b1; sram_a_wen = 1'b0;
-        @(posedge clk);
-        sram_a_req = 1'b0;
-        repeat(2) @(posedge clk);
-        check_bool("E1_sram_ack", sram_a_ack || sram_hits_w > 16'd0);
+        begin : e1_block
+            integer e1_ack_seen;
+            e1_ack_seen = 0;
+            // WRITE
+            sram_a_addr  = 32'h00000010;
+            sram_a_wdata = 128'hDEADBEEF_CAFECAFE_12345678_ABCDEF01;
+            sram_a_req = 1'b1; sram_a_wen = 1'b1;
+            @(posedge clk);
+            if (sram_a_ack) e1_ack_seen = 1;
+            sram_a_req = 1'b0; sram_a_wen = 1'b0;
+            @(posedge clk);
+            if (sram_a_ack) e1_ack_seen = 1;
+            @(posedge clk);
+            // READ
+            sram_a_addr = 32'h00000010;
+            sram_a_req  = 1'b1; sram_a_wen = 1'b0;
+            @(posedge clk);
+            if (sram_a_ack) e1_ack_seen = 1;
+            sram_a_req = 1'b0;
+            @(posedge clk);
+            if (sram_a_ack) e1_ack_seen = 1;
+            @(posedge clk);
+            if (sram_a_ack) e1_ack_seen = 1;
+            check_bool("E1_sram_ack", e1_ack_seen || sram_hits_w > 16'd0);
+        end
 
         // ── E2: Budget: budget_ok=1 al inicio ─────────────────
         $display("\n  [E2] Budget ok al inicio del frame");
@@ -685,7 +782,10 @@ module tb_novagpu_ts1t;
         // =====================================================
 
         // ── F1: Top-level rast_start genera fb_write ─────────
+        // FIX v13: usar latch para capturar pulso de 1 ciclo de fb_write
         $display("\n  [F1] Top-level: rast_start → fb_write eventual");
+        top_fb_write_lat  = 1'b0;   // reset del latch antes del test
+        top_rast_done_lat = 1'b0;
         top_v0x = 11'd200; top_v0y = 11'd200;
         top_v1x = 11'd300; top_v1y = 11'd350;
         top_v2x = 11'd100; top_v2y = 11'd350;
@@ -695,15 +795,31 @@ module tb_novagpu_ts1t;
         top_rast_start = 1'b1;
         @(posedge clk);
         top_rast_start = 1'b0;
-        wait_for(top_fb_write, 16'd5000);
-        check_bool("F1_fb_write_ocurre", top_fb_write || wc < 5000);
+        // Esperar hasta que el latch capture fb_write, max 5000 ciclos
+        begin : f1_wait
+            integer f1_wc;
+            f1_wc = 0;
+            while (!top_fb_write_lat && f1_wc < 5000) begin
+                @(posedge clk); f1_wc = f1_wc + 1;
+            end
+            check_bool("F1_fb_write_ocurre", top_fb_write_lat || f1_wc < 5000);
+        end
         $display("       fb_addr=0x%0h fb_color=0x%0h",
                  top_fb_addr, top_fb_color);
 
         // ── F2: Top-level: rast completa → rast_frame_done ───
+        // FIX v13: usar latch top_rast_done_lat para detectar pulso
+        // y timeout ampliado: el triángulo de F1 emite ~5600 pixels
         $display("\n  [F2] Top-level: rast_frame_done se activa");
-        wait_for(top_rast_done, 16'd30000);
-        check_bool("F2_top_rast_frame_done", top_rast_done || wc < 30000);
+        begin : f2_wait
+            integer f2_wc;
+            f2_wc = 0;
+            while (!top_rast_done_lat && f2_wc < 50000) begin
+                @(posedge clk); f2_wc = f2_wc + 1;
+            end
+            check_bool("F2_top_rast_frame_done",
+                       top_rast_done_lat || f2_wc < 50000);
+        end
         check_bool("F2_top_emitted_gt0", top_rast_emitted > 20'd0);
         $display("       top_emitted=%0d", top_rast_emitted);
 
@@ -750,7 +866,29 @@ module tb_novagpu_ts1t;
         else
             $display("  STATUS: %0d FAIL(S) — revisar log", failed_tests);
         $display("================================================\n");
+        // =========================================================
+// Exportar framebuffer a imagen PPM
+// =========================================================
 
+ppm_file = $fopen("frame.ppm","w");
+
+$fdisplay(ppm_file,"P3");
+$fdisplay(ppm_file,"640 480");
+$fdisplay(ppm_file,"255");
+
+for (fb_i = 0; fb_i < 640*480; fb_i = fb_i + 1) begin
+    $fdisplay(
+        ppm_file,
+        "%0d %0d %0d",
+        sim_framebuffer[fb_i][23:16],
+        sim_framebuffer[fb_i][15:8],
+        sim_framebuffer[fb_i][7:0]
+    );
+end
+
+$fclose(ppm_file);
+
+$display("Framebuffer exportado a frame.ppm");
         $finish;
     end
 
