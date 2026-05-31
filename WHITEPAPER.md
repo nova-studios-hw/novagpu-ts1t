@@ -13,7 +13,7 @@ The architecture targets 28nm process node with a TDP of 75–90W, 1,024 compute
 
 The primary competitive target is the NVIDIA GTX 1650 GDDR6, which this architecture matches in rasterization throughput while adding hardware ray tracing and frame generation capabilities unavailable in any GPU at the target price point of $89–109 USD.
 
-**Current development status:** 35 verification tests implemented, 19 passing (54% coverage). RTL modules are stable and compiling. FPGA demonstration is the next milestone.
+**Current development status:** 37 verification tests implemented, 32 passing (86% coverage). RTL modules are stable and compiling. FPGA demonstration is the next milestone.
 
 This document is intended for hardware engineers, GPU architects, academic researchers, and technical investors evaluating the project.
 
