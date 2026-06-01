@@ -1,5 +1,7 @@
 # NovaGPU TS1T — Technical Whitepaper
 
+
+
 **Nova Studios**
 *Version 4.0 — June 2026*
 
