@@ -26,7 +26,7 @@ Current development status:
 |---------|---------|
 | RTL Development | ✅ Complete |
 | Simulation | ✅ Functional |
-| Test Coverage | ✅ 32 / 37 Tests Passing |
+| Test Coverage | ✅ 33 / 37 Tests Passing |
 | Synthesis | ✅ Successful |
 | Place & Route | ✅ Successful |
 | Bitstream Generation | ✅ Successful |
@@ -45,11 +45,11 @@ Results:
 
 Total Tests : 37
 
-Passed : 32
+Passed : 33
 
-Failed : 5
+Failed : 4
 
-Success Rate : 86%
+Success Rate : 89%
 
 Passing Groups:
 
