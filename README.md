@@ -9,7 +9,7 @@ Nova Studios / Maximal Technology
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)]()
 [![RTL](https://img.shields.io/badge/RTL-Verilog-blue.svg)]()
 [![Vivado](https://img.shields.io/badge/Vivado-2023.1-green.svg)]()
-[![Simulation](https://img.shields.io/badge/Tests-32%2F37_Passed-brightgreen.svg)]()
+[![Simulation](https://img.shields.io/badge/Tests-33%2F37_Passed-brightgreen.svg)]()
 [![Synthesis](https://img.shields.io/badge/Synthesis-Passed-success.svg)]()
 [![Implementation](https://img.shields.io/badge/Implementation-Passed-success.svg)]()
 [![Bitstream](https://img.shields.io/badge/Bitstream-Generated-success.svg)]()
