@@ -1,0 +1,1 @@
+Aquí se generaran, los ppm, ejecutar comando después de que se haya creado todos los frames, o a gusto de ustedes.
