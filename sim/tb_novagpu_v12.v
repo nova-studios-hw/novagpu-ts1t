@@ -30,6 +30,11 @@ module tb_novagpu_ts1t;
     integer passed_tests = 0;
     integer failed_tests = 0;
     integer dump_file;
+    integer frame_id;
+    integer NUM_FRAMES;      // 3600 = 1 min @60fps, 7200 = 2 min
+    integer FPS;             // 60
+    real ang_cube, ang_tetra;
+    real ang_step_cube, ang_step_tetra;
 initial begin
     dump_file = $fopen("framebuffer.txt", "w");
 end
@@ -135,7 +140,277 @@ end
             rast_start = 1'b0;
         end
     endtask
+        // =========================================================
+    // 3D helpers + TOP draw helpers (for PPM scene)
+    // Uses U_TOP raster path so sim_framebuffer captures writes.
+    // =========================================================
 
+    function automatic integer clampi(input integer v, input integer lo, input integer hi);
+        begin
+            if (v < lo) clampi = lo;
+            else if (v > hi) clampi = hi;
+            else clampi = v;
+        end
+    endfunction
+
+    task automatic project_persp(
+        input real x, input real y, input real z,
+        input real cx, input real cy, input real f,
+        output [10:0] sx, output [10:0] sy
+    );
+        real px, py;
+        integer ix, iy;
+        begin
+            // z must be > 0
+            px = cx + f * (x / z);
+            py = cy - f * (y / z);
+
+            ix = $rtoi(px);
+            iy = $rtoi(py);
+
+            ix = clampi(ix, 0, 639);
+            iy = clampi(iy, 0, 479);
+
+            sx = ix[10:0];
+            sy = iy[10:0];
+        end
+    endtask
+
+    task automatic top_draw_tri2d(
+    input [10:0] x0, input [10:0] y0,
+    input [10:0] x1, input [10:0] y1,
+    input [10:0] x2, input [10:0] y2,
+    input [31:0] c0, input [31:0] c1, input [31:0] c2
+);
+    integer tmo;
+    integer idle;
+    integer saw_write;
+begin
+    // Cargar inputs
+    top_v0x = x0; top_v0y = y0;
+    top_v1x = x1; top_v1y = y1;
+    top_v2x = x2; top_v2y = y2;
+
+    // Alpha=FF SIEMPRE
+    top_c0 = c0; top_c1 = c1; top_c2 = c2;
+    top_z0 = 32'h00008000; top_z1 = 32'h00008000; top_z2 = 32'h00008000;
+
+    // (Re)armar latches
+    top_fb_write_lat  = 1'b0;
+    top_rast_done_lat = 1'b0;
+
+    // Disparo
+    @(posedge clk);
+    top_rast_start = 1'b1;
+    @(posedge clk);
+    top_rast_start = 1'b0;
+
+    // 1) Esperar a ver al menos un fb_write (si nunca hay write, triángulo inválido/culled)
+    saw_write = 0;
+    tmo = 0;
+    while (!saw_write && tmo < 200000) begin
+        @(posedge clk);
+        if (top_fb_write) saw_write = 1;
+        tmo = tmo + 1;
+    end
+
+    // 2) Esperar "quiet window": 2000 ciclos sin fb_write => asumimos que terminó este triángulo
+    idle = 0;
+    tmo  = 0;
+    while (idle < 2000 && tmo < 400000) begin
+        @(posedge clk);
+        if (top_fb_write) idle = 0;
+        else              idle = idle + 1;
+        tmo = tmo + 1;
+    end
+end
+endtask
+    task automatic top_draw_tri3d(
+        input real ax, input real ay, input real az,
+        input real bx, input real by, input real bz,
+        input real cxr, input real cyr, input real czr,
+        input [31:0] ca, input [31:0] cb, input [31:0] cc
+    );
+        // camera/projection
+        real cam_cx, cam_cy, cam_f;
+        reg [10:0] x0,y0,x1,y1,x2,y2;
+        begin
+            cam_cx = 320.0;
+            cam_cy = 240.0;
+            cam_f  = 240.0;
+
+            project_persp(ax, ay, az, cam_cx, cam_cy, cam_f, x0, y0);
+            project_persp(bx, by, bz, cam_cx, cam_cy, cam_f, x1, y1);
+            project_persp(cxr, cyr, czr, cam_cx, cam_cy, cam_f, x2, y2);
+
+            top_draw_tri2d(x0,y0,x1,y1,x2,y2, ca,cb,cc);
+        end
+    endtask
+
+
+
+    // ---------------------------------------------------------
+    // Render Scene: a 3D triangle object (tetra-like) + 3D square (cube)
+    // ---------------------------------------------------------
+task automatic render_scene_triangle3d_and_cube3d(
+    input real a_cube,   // ángulo del cubo (rad)
+    input real a_tetra   // ángulo del tetra (rad)
+);
+    // Tetra vertices (triangle 3D object) - placed on LEFT
+    real t0x,t0y,t0z;
+    real t1x,t1y,t1z;
+    real t2x,t2y,t2z;
+    real t3x,t3y,t3z;
+
+    // Cube vertices - placed on RIGHT
+    real c[0:7][0:2]; // [vertex][xyz]
+    real s;
+    real ox, oy, oz;
+
+    // temporales rotación
+    real cx, cy, cz;
+    real x, y, z;
+    real xr, yr, zr;
+
+    // seno/coseno
+    real cc, sc, ct, st;
+
+    integer i;
+
+    begin
+        // ----------------------------
+        // Precompute sin/cos
+        // ----------------------------
+        cc = $cos(a_cube);
+        sc = $sin(a_cube);
+
+        ct = $cos(a_tetra);
+        st = $sin(a_tetra);
+
+        // =====================================================
+        // 3D TRIANGLE object (tetrahedron) — LEFT
+        // =====================================================
+        // Base pose (antes de rotar)
+        t0x = -1.40; t0y = -0.60; t0z = 4.2;
+        t1x = -0.40; t1y = -0.60; t1z = 4.2;
+        t2x = -0.90; t2y =  0.50; t2z = 4.2;
+        t3x = -0.90; t3y =  0.00; t3z = 3.4; // top más cerca
+
+        // Rotación del tetra alrededor de su centro aproximado (en XZ), yaw sobre Y
+        // Centro aproximado:
+        cx = -0.90; cy = 0.00; cz = 4.0;
+
+        // rot(v) = (x*cos + z*sin, y, -x*sin + z*cos)
+        // t0
+        x = t0x - cx; y = t0y - cy; z = t0z - cz;
+        xr =  x*ct + z*st;
+        yr =  y;
+        zr = -x*st + z*ct;
+        t0x = xr + cx; t0y = yr + cy; t0z = zr + cz;
+
+        // t1
+        x = t1x - cx; y = t1y - cy; z = t1z - cz;
+        xr =  x*ct + z*st;
+        yr =  y;
+        zr = -x*st + z*ct;
+        t1x = xr + cx; t1y = yr + cy; t1z = zr + cz;
+
+        // t2
+        x = t2x - cx; y = t2y - cy; z = t2z - cz;
+        xr =  x*ct + z*st;
+        yr =  y;
+        zr = -x*st + z*ct;
+        t2x = xr + cx; t2y = yr + cy; t2z = zr + cz;
+
+        // t3
+        x = t3x - cx; y = t3y - cy; z = t3z - cz;
+        xr =  x*ct + z*st;
+        yr =  y;
+        zr = -x*st + z*ct;
+        t3x = xr + cx; t3y = yr + cy; t3z = zr + cz;
+
+        // 3 caras visibles, flat shading (ALPHA=FF)
+        top_draw_tri3d(t0x,t0y,t0z,  t1x,t1y,t1z,  t3x,t3y,t3z,
+                       32'hFFFF4040, 32'hFFFF4040, 32'hFFFF4040);
+        top_draw_tri3d(t1x,t1y,t1z,  t2x,t2y,t2z,  t3x,t3y,t3z,
+                       32'hFFCC3030, 32'hFFCC3030, 32'hFFCC3030);
+        top_draw_tri3d(t2x,t2y,t2z,  t0x,t0y,t0z,  t3x,t3y,t3z,
+                       32'hFF992020, 32'hFF992020, 32'hFF992020);
+
+        // =====================================================
+        // 3D SQUARE object (cube) — RIGHT
+        // =====================================================
+        s  = 0.80;     // half-size
+        ox =  1.20;    // center X
+        oy =  0.00;    // center Y
+        oz =  5.2;     // center Z (más grande = más lejos / más pequeño en pantalla)
+
+        // vertices base (sin rotar)
+        // 0(-,-,-),1(+,-,-),2(+,+,-),3(-,+,-),4(-,-,+),5(+,-,+),6(+,+,+),7(-,+,+)
+        c[0][0]=ox-s; c[0][1]=oy-s; c[0][2]=oz-s;
+        c[1][0]=ox+s; c[1][1]=oy-s; c[1][2]=oz-s;
+        c[2][0]=ox+s; c[2][1]=oy+s; c[2][2]=oz-s;
+        c[3][0]=ox-s; c[3][1]=oy+s; c[3][2]=oz-s;
+
+        c[4][0]=ox-s; c[4][1]=oy-s; c[4][2]=oz+s;
+        c[5][0]=ox+s; c[5][1]=oy-s; c[5][2]=oz+s;
+        c[6][0]=ox+s; c[6][1]=oy+s; c[6][2]=oz+s;
+        c[7][0]=ox-s; c[7][1]=oy+s; c[7][2]=oz+s;
+
+        // Rotar cubo alrededor de su centro (ox,oy,oz), yaw sobre Y
+        for (i = 0; i < 8; i = i + 1) begin
+            x = c[i][0] - ox;
+            y = c[i][1] - oy;
+            z = c[i][2] - oz;
+
+            xr =  x*cc + z*sc;
+            yr =  y;
+            zr = -x*sc + z*cc;
+
+            c[i][0] = xr + ox;
+            c[i][1] = yr + oy;
+            c[i][2] = zr + oz;
+        end
+
+        // 12 triangles, 6 faces, colored per face (flat shading) — ALPHA=FF
+        // Front (4,5,6) (4,6,7)
+        top_draw_tri3d(c[4][0],c[4][1],c[4][2], c[5][0],c[5][1],c[5][2], c[6][0],c[6][1],c[6][2],
+                       32'hFF40FF40,32'hFF40FF40,32'hFF40FF40);
+        top_draw_tri3d(c[4][0],c[4][1],c[4][2], c[6][0],c[6][1],c[6][2], c[7][0],c[7][1],c[7][2],
+                       32'hFF40FF40,32'hFF40FF40,32'hFF40FF40);
+
+        // Back (0,2,1) (0,3,2)
+        top_draw_tri3d(c[0][0],c[0][1],c[0][2], c[2][0],c[2][1],c[2][2], c[1][0],c[1][1],c[1][2],
+                       32'hFF20AA20,32'hFF20AA20,32'hFF20AA20);
+        top_draw_tri3d(c[0][0],c[0][1],c[0][2], c[3][0],c[3][1],c[3][2], c[2][0],c[2][1],c[2][2],
+                       32'hFF20AA20,32'hFF20AA20,32'hFF20AA20);
+
+        // Left (0,4,7) (0,7,3)
+        top_draw_tri3d(c[0][0],c[0][1],c[0][2], c[4][0],c[4][1],c[4][2], c[7][0],c[7][1],c[7][2],
+                       32'hFF4040FF,32'hFF4040FF,32'hFF4040FF);
+        top_draw_tri3d(c[0][0],c[0][1],c[0][2], c[7][0],c[7][1],c[7][2], c[3][0],c[3][1],c[3][2],
+                       32'hFF4040FF,32'hFF4040FF,32'hFF4040FF);
+
+        // Right (1,2,6) (1,6,5)
+        top_draw_tri3d(c[1][0],c[1][1],c[1][2], c[2][0],c[2][1],c[2][2], c[6][0],c[6][1],c[6][2],
+                       32'hFFFFFF40,32'hFFFFFF40,32'hFFFFFF40);
+        top_draw_tri3d(c[1][0],c[1][1],c[1][2], c[6][0],c[6][1],c[6][2], c[5][0],c[5][1],c[5][2],
+                       32'hFFFFFF40,32'hFFFFFF40,32'hFFFFFF40);
+
+        // Top (3,7,6) (3,6,2)
+        top_draw_tri3d(c[3][0],c[3][1],c[3][2], c[7][0],c[7][1],c[7][2], c[6][0],c[6][1],c[6][2],
+                       32'hFFFF40FF,32'hFFFF40FF,32'hFFFF40FF);
+        top_draw_tri3d(c[3][0],c[3][1],c[3][2], c[6][0],c[6][1],c[6][2], c[2][0],c[2][1],c[2][2],
+                       32'hFFFF40FF,32'hFFFF40FF,32'hFFFF40FF);
+
+        // Bottom (0,1,5) (0,5,4)
+        top_draw_tri3d(c[0][0],c[0][1],c[0][2], c[1][0],c[1][1],c[1][2], c[5][0],c[5][1],c[5][2],
+                       32'hFF40FFFF,32'hFF40FFFF,32'hFF40FFFF);
+        top_draw_tri3d(c[0][0],c[0][1],c[0][2], c[5][0],c[5][1],c[5][2], c[4][0],c[4][1],c[4][2],
+                       32'hFF40FFFF,32'hFF40FFFF,32'hFF40FFFF);
+
+    end
+endtask
     // =========================================================
     // ── DUT B: Token Matching Unit ───────────────────────────
     // =========================================================
@@ -172,7 +447,13 @@ end
             tmu_valid = 1'b0;
         end
     endtask
-
+    task automatic clear_sim_fb;
+    integer i;
+    begin
+    for (i = 0; i < 640*480; i = i + 1)
+        sim_framebuffer[i] = 32'h00000000;
+   end
+  endtask
     // FIX v13: latch de fire_valid para no perder pulso de 1 ciclo
     reg tmu_fire_valid_lat;
     reg [DATA_WIDTH-1:0] tmu_fire_da_lat;
@@ -421,7 +702,34 @@ end
     integer px_prev, trial;
     reg got_token;
     reg [DATA_WIDTH-1:0] captured_tok;
+task automatic export_ppm_frame(input integer id);
+    integer f;
+    integer i;
+    reg [1023:0] fname;
+begin
+    $sformat(fname, "ppm_mp4/frame_%04d.ppm", id);
 
+    $display("[PPM] Exportando %s", fname);
+
+    f = $fopen(fname, "w");
+
+    $fdisplay(f, "P3");
+    $fdisplay(f, "640 480");
+    $fdisplay(f, "255");
+
+    for (i = 0; i < 640*480; i = i + 1) begin
+        $fdisplay(
+            f,
+            "%0d %0d %0d",
+            sim_framebuffer[i][23:16],
+            sim_framebuffer[i][15:8],
+            sim_framebuffer[i][7:0]
+        );
+    end
+
+    $fclose(f);
+end
+endtask
     initial begin
         $dumpfile("novagpu_ts1t.vcd");
         $dumpvars(0, tb_novagpu_ts1t);
@@ -704,7 +1012,7 @@ end
         $display("\n  [D5] ray_ready=1 tras completion");
         repeat(5) @(posedge clk);
         check_bool("D5_ray_ready_after", bvh_ray_ready);
-
+        
         // =====================================================
         $display("\n========= GROUP E: SRAM + BUDGET + MVU =========");
         // =====================================================
@@ -843,7 +1151,23 @@ end
         $display("\n  [F4] Top-level: verificar pcie_data_out coherente");
         check_bool("F4_pcie_out_defined",
                    top_pcie_out !== {256{1'bx}});
+                // =====================================================
+        // DEMO FINAL PARA PPM: TRIANGLE 3D + CUBE 3D (NO COLLISION)
+        // Limpia el framebuffer y dibuja una escena estática
+        // =====================================================
 
+        reset_all;
+        clear_sim_fb();
+        $display("\n========= DEMO: 3D TRIANGLE + 3D CUBE (PPM) =========");
+
+        clear_sim_fb();
+        // también resetea latches por si quedaron set en tests previos
+        top_fb_write_lat  = 1'b0;
+        top_rast_done_lat = 1'b0;
+
+        render_scene_triangle3d_and_cube3d(ang_cube, ang_tetra);
+
+        $display("[DEMO] Done. Exporting PPM next...");
         // =====================================================
         // REPORTE FINAL
         // =====================================================
@@ -870,33 +1194,52 @@ end
 // Exportar framebuffer a imagen PPM
 // =========================================================
 
-ppm_file = $fopen("frame.ppm","w");
-
-$fdisplay(ppm_file,"P3");
-$fdisplay(ppm_file,"640 480");
-$fdisplay(ppm_file,"255");
-
-for (fb_i = 0; fb_i < 640*480; fb_i = fb_i + 1) begin
-    $fdisplay(
-        ppm_file,
-        "%0d %0d %0d",
-        sim_framebuffer[fb_i][23:16],
-        sim_framebuffer[fb_i][15:8],
-        sim_framebuffer[fb_i][7:0]
-    );
-end
-
-$fclose(ppm_file);
-
-$display("Framebuffer exportado a frame.ppm");
-        $finish;
     end
 
     // ── Watchdog global ───────────────────────────────────────
     initial begin
-        #2_000_000;
+// Recomendado: reset para que el core esté limpio para el demo
+reset_all;
+clear_sim_fb();
+
+FPS        = 60;
+NUM_FRAMES = 3600;  // 1 minuto. Para 2 min => 7200
+
+ang_cube  = 0.0;
+ang_tetra = 0.0;
+
+// 1 vuelta cada 4 segundos:
+ang_step_cube  = 6.283185307179586 / (FPS * 4.0);
+ang_step_tetra = 6.283185307179586 / (FPS * 3.0); // tetra un poco más rápido
+
+frame_id = 0;
+for (frame_id = 0; frame_id < NUM_FRAMES; frame_id = frame_id + 1) begin
+    // 1) limpiar framebuffer sim
+    clear_sim_fb();
+
+    // 2) dibujar escena 3D usando los ángulos actuales
+    //    IMPORTANTE: aquí debes llamar tu rutina actual que dibuja el cubo + tetra
+    //    pero modificando los vértices con ang_cube/ang_tetra antes de proyectar.
+    //
+    //    Ejemplo de llamada (tú la implementas/ya la tienes):
+    //    render_scene_3d(ang_cube, ang_tetra);
+
+    render_scene_triangle3d_and_cube3d(ang_cube, ang_tetra);
+
+    // 3) exportar el frame
+    export_ppm_frame(frame_id);
+
+    // 4) avanzar ángulos
+    ang_cube  = ang_cube  + ang_step_cube;
+    ang_tetra = ang_tetra + ang_step_tetra;
+end
+
+$display("[DEMO] Done. Generated %0d frames.", NUM_FRAMES);
+      #20_000_000;
         $display("[WATCHDOG] Timeout global — forcando $finish");
         $finish;
+        $display("\n========= DEMO: 3D ANIM (PPM SEQUENCE) =========");
+$finish;
     end
 
 endmodule
