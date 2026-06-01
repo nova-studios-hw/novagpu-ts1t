@@ -1,3 +1,11 @@
+
+
+https://github.com/user-attachments/assets/58b2a3f7-9f2d-4de6-8d94-98295fe82fe1
+
+
+
+
+
 # NovaGPU TS1T — Technical Whitepaper
 
 
