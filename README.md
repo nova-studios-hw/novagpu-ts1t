@@ -6,6 +6,8 @@
 
 Nova Studios / Maximal Technology
 
+Discord Server: https://discord.gg/RfQwz8ySr
+
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)]()
 [![RTL](https://img.shields.io/badge/RTL-Verilog-blue.svg)]()
 [![Vivado](https://img.shields.io/badge/Vivado-2023.1-green.svg)]()
