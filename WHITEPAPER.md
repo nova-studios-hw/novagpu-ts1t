@@ -117,7 +117,7 @@ Es importante ser completamente honesto sobre dónde está el proyecto hoy.
 
 Hay dos conjuntos de tests en el proyecto. El testbench interno de desarrollo refleja **47/48 pruebas pasadas (97.9%)**, incluyendo validación del pipeline completo, rasterización, BVH traversal, MVU, y generación de video.
 
-Ambos números son reales y representan etapas distintas del proceso. El 97% es el estado interno de validación arquitectónica. El 34% es el estado del testbench público que está siendo estabilizado activamente.
+Ambos números son reales y representan etapas distintas del proceso. El 97% es el estado interno de validación arquitectónica.
 
 El único fallo en el conjunto interno es el caso **A5 — Degenerate Triangle Handling**, que se explica en detalle en la sección del Triangle Rasterizer.
 
