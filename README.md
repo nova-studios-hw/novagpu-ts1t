@@ -6,6 +6,8 @@
 
 Nova Studios / Maximal Technology
 
+This message is to let you know that I will be updating more frequently on the Discord server.
+
 Discord:
 https://discord.gg/RfQwz8ySr
 
