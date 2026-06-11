@@ -1,11 +1,11 @@
 `timescale 1ns/1ps
-// =============================================================================
-// arbiter.v  —  Árbitro Round-Robin  v3.0
-// NovaGPU TS 2T  —  Nova Studios / Maximal Technology
-//
-// Árbitro de N puertos con FIFO de bypass BUF_DEPTH entradas.
-// NUM_PORTS máximo 8 (3-bit rr_ptr).
-// =============================================================================
+
+
+
+
+
+
+
 
 module arbiter #(
     parameter NUM_PORTS  = 4,
@@ -36,17 +36,17 @@ module arbiter #(
 
     localparam BUF_BITS = $clog2(BUF_DEPTH);
 
-    // ── FIFO ──────────────────────────────────────────────────
+    
     reg [DATA_WIDTH-1:0] fifo [0:BUF_DEPTH-1];
     reg [BUF_BITS-1:0]   wr_ptr, rd_ptr;
     reg [BUF_BITS:0]     fill;
 
     assign buf_full = (fill >= BUF_DEPTH[BUF_BITS:0]);
 
-    // ── Round-robin pointer ───────────────────────────────────
+    
     reg [2:0] rr;
 
-    // ── Mux de datos de entrada ───────────────────────────────
+    
     reg [DATA_WIDTH-1:0] sel_data;
     always @(*) begin
         case (rr)
@@ -75,7 +75,7 @@ module arbiter #(
             data_valid <= 1'b0;
             grant      <= {NUM_PORTS{1'b0}};
 
-            // Arbitrar: si hay request y FIFO no lleno
+            
             if (rr < NUM_PORTS[2:0] && req[rr] && !buf_full) begin
                 grant[rr]    <= 1'b1;
                 fifo[wr_ptr] <= sel_data;
@@ -84,10 +84,10 @@ module arbiter #(
                 fill         <= fill + {{BUF_BITS{1'b0}}, 1'b1};
             end
 
-            // Avanzar RR
+            
             rr <= (rr >= NUM_PORTS[2:0] - 3'd1) ? 3'd0 : rr + 3'd1;
 
-            // Sacar de FIFO si hay datos
+            
             if (fill > {(BUF_BITS+1){1'b0}}) begin
                 data_out   <= fifo[rd_ptr];
                 data_valid <= 1'b1;

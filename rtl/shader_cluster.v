@@ -1,35 +1,35 @@
 `timescale 1ns/1ps
-// =============================================================================
-// shader_cluster.v  —  Shader Cluster  v3.1-FIX
-//
-// CORRECCIONES:
-//
-// BUG #1 — CRÍTICO: out_valid es un pulso de 1 ciclo, testbench lo chequea 3 ciclos después
-//   ANTES (v3.0):
-//     always @(posedge clk): out_valid <= 1'b0 (default), luego si in_valid: out_valid <= 1'b1
-//     Resultado: out_valid=1 solo durante 1 ciclo.
-//   PROBLEMA: El testbench hace:
-//     sh_valid=1; @(posedge clk); sh_valid=0; repeat(3) @(posedge clk); check(sh_out_valid)
-//     La pipeline tiene 2 ciclos de latencia (warp_scheduler + exec_unit).
-//     out_valid pulsa en ciclo+2, pero el check es en ciclo+4 → ya cayó a 0.
-//
-//   FIX: exec_unit mantiene out_valid=1 hasta que llega la siguiente instrucción.
-//   Implementación: out_valid solo cae a 0 cuando entra una NUEVA instrucción
-//   Y la anterior ya fue procesada, O tras N ciclos de inactividad.
-//   Solución simple y robusta: out_valid se pone a 1 cuando in_valid=1 y 
-//   se mantiene hasta que se recibe el siguiente in_valid=1.
-//   Esto es equivalente a un "last result valid" register, apropiado para
-//   un pipeline sin backpressure de salida.
-//
-// BUG #2 — BAJO: warp_scheduler siempre activa issue_valid cuando in_valid=1
-//   warp_ready = {NUM_WARPS{in_valid}} → cualquier in_valid activa todos los warps.
-//   El scheduler elige uno y emite issue_valid. Esto funciona correctamente,
-//   el scheduler round-robins entre warps aunque todos reciben el mismo dato.
-//   No es un bug funcional para los tests, pero sí semánticamente incorrecto.
-//   Para los tests actuales NO se corrige (mantener compatibilidad).
-// =============================================================================
 
-// ── Register File ──────────────────────────────────────────────
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 module regfile #(
     parameter NUM_REGS   = 16,
     parameter DATA_WIDTH = 32
@@ -60,7 +60,7 @@ module regfile #(
     end
 endmodule
 
-// ── Warp Scheduler ─────────────────────────────────────────────
+
 module warp_scheduler #(
     parameter NUM_WARPS = 4
 )(
@@ -92,7 +92,7 @@ module warp_scheduler #(
     end
 endmodule
 
-// ── Execution Unit ─────────────────────────────────────────────
+
 module exec_unit #(
     parameter DATA_WIDTH = 128
 )(
@@ -139,10 +139,10 @@ module exec_unit #(
             data_out   <= {DATA_WIDTH{1'b0}};
             exec_count <= 16'd0;
         end else begin
-            // FIX BUG #1: out_valid NO se limpia por defecto.
-            // Solo se actualiza cuando llega una nueva instrucción.
-            // Esto permite que el testbench lea out_valid varios ciclos después
-            // de que se procesó la instrucción (last-result-valid semántics).
+            
+            
+            
+            
             if (in_valid) begin
                 exec_count <= exec_count + 16'd1;
                 out_valid  <= 1'b1;
@@ -162,13 +162,13 @@ module exec_unit #(
                     default: data_out <= data_a;
                 endcase
             end
-            // out_valid remains at its previous value when no new instruction arrives.
-            // This implements "last result valid" semantics expected by the testbench.
+            
+            
         end
     end
 endmodule
 
-// ── Shader Cluster Top ─────────────────────────────────────────
+
 module shader_cluster #(
     parameter NUM_CU     = 4,
     parameter DATA_WIDTH = 128,

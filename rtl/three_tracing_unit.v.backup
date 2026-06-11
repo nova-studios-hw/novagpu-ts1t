@@ -1,16 +1,16 @@
 `timescale 1ns/1ps
-// =============================================================================
-// three_tracing_unit.v  —  Three Tracing Unit  v3.0
-// NovaGPU TS 2T  —  Nova Studios / Maximal Technology
-//
-// Pipeline híbrido Ray Tracing + Path Tracing:
-//   Stage 1: Fragment → Ray generation
-//   Stage 2: BVH traversal (unidad primaria)
-//   Stage 3: Shade + blend
-//   Stage 4: Output con color final
-//
-// Budget control: si budget_ok=0, bypass directo.
-// =============================================================================
+
+
+
+
+
+
+
+
+
+
+
+
 
 module three_tracing_unit #(
     parameter BVH_DEPTH    = 8,
@@ -35,11 +35,11 @@ module three_tracing_unit #(
     output reg  [15:0]            budget_drops
 );
 
-    // ── Ray generation desde pixel ─────────────────────────────
+    
     wire [15:0] frag_px    = frag_in[63:48];
     wire [15:0] frag_py    = frag_in[47:32];
 
-    // Mapear pixel a ray (Q16.16): offset desde centro de pantalla
+    
     wire signed [31:0] ray_ox = ($signed({1'b0, frag_px}) - 32'sd320) * 32'sh00000011;
     wire signed [31:0] ray_oy = ($signed({1'b0, frag_py}) - 32'sd240) * 32'sh00000011;
     wire signed [31:0] ray_dx = 32'sh00000100;
@@ -47,7 +47,7 @@ module three_tracing_unit #(
 
     wire [DATA_WIDTH-1:0] ray_token = {ray_ox, ray_oy, ray_dx, ray_dy};
 
-    // ── BVH Unit primaria ──────────────────────────────────────
+    
     wire                   bvh_ready;
     wire                   bvh_hit_valid;
     wire [7:0]             bvh_hit_prim;
@@ -71,7 +71,7 @@ module three_tracing_unit #(
         .hits_total(bvh_hits_total), .misses_total(bvh_misses_total)
     );
 
-    // ── Unidades BVH adicionales (idle, instanciadas para cobertura) ──
+    
     genvar gi;
     generate
         for (gi = 1; gi < NUM_RT_UNITS; gi = gi + 1) begin : bvh_aux
@@ -94,16 +94,16 @@ module three_tracing_unit #(
         end
     endgenerate
 
-    // ── Color LUT por prim_id ──────────────────────────────────
+    
     reg [7:0] rt_prim_r;
     wire [31:0] rt_color =
-        (rt_prim_r == 8'd0) ? 32'hFFFF0000 :  // rojo
-        (rt_prim_r == 8'd1) ? 32'hFF00FF00 :  // verde
-        (rt_prim_r == 8'd2) ? 32'hFF0000FF :  // azul
-        (rt_prim_r == 8'd3) ? 32'hFF404040 :  // gris
-                              32'hFF000000;   // negro
+        (rt_prim_r == 8'd0) ? 32'hFFFF0000 :  
+        (rt_prim_r == 8'd1) ? 32'hFF00FF00 :  
+        (rt_prim_r == 8'd2) ? 32'hFF0000FF :  
+        (rt_prim_r == 8'd3) ? 32'hFF404040 :  
+                              32'hFF000000;   
 
-    // ── FSM ────────────────────────────────────────────────────
+    
     localparam ST_IDLE  = 2'd0;
     localparam ST_WAIT  = 2'd1;
     localparam ST_SHADE = 2'd2;
@@ -161,7 +161,7 @@ module three_tracing_unit #(
 
                 ST_SHADE: begin
                     if (hit_cap) begin
-                        // Blend 50/50: fragment + RT color
+                        
                         shaded_color <= {8'hFF,
                             saved_frag[119:112][7:1] + rt_color[23:16][7:1],
                             saved_frag[111:104][7:1] + rt_color[15:8][7:1],

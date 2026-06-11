@@ -1,48 +1,48 @@
 `timescale 1ns/1ps
-// =============================================================================
-// novagpu_core.v  —  NovaGPU TS 1T  Núcleo interno  v1.1-FIX
-// Nova Studios / Maximal Technology
-//
-// CORRECCIONES v1.1 (sobre v1.0):
-//
-// BUG F2/F3 — CRÍTICO: rast_frame_done y top_emitted=0
-//   CAUSA: En v1.0 el token_ready del rasterizador está conectado a 1'b1
-//   (hardwired). Esto es correcto para que el rasterizador no se bloquee,
-//   pero la señal fb_write (tile_write) nunca sube porque:
-//   1. rast_token_valid sí se activa (los tests A4/A7 del rasterizador pasan)
-//   2. tile_arbiter recibe frag_valid=rast_token_valid|tt_valid → OK
-//   3. tile_arbiter procesa y genera pixel_write → tile_write
-//   4. SRAM recibe a_req=tile_write → OK
-//
-//   El problema F2 es que rast_frame_done no se conecta correctamente:
-//   se expone a través de rast_frame_done directamente → OK en v1.0.
-//
-//   PROBLEMA REAL F1/F2/F3: El tile_arbiter tarda 3 ciclos por fragmento
-//   (IDLE→TEST→WRITE→DONE). Durante ese tiempo, frag_ready=0, por lo
-//   que el rasterizador no puede emitir el siguiente token (pero
-//   token_ready=1'b1 hardwired → el rasterizador sigue emitiendo).
-//   Los tokens se pierden porque tile_arbiter tiene frag_ready=0 pero
-//   el rasterizador sigue emitiendo con token_ready=1'b1.
-//
-//   FIX: Conectar token_ready del rasterizador a frag_ready del
-//   tile_arbiter, para que el rasterizador espere cuando el arbiter
-//   está ocupado. Esto garantiza que no se pierdan fragmentos.
-//
-//   CONSECUENCIA: El rasterizador tarda más (backpressure), pero todos
-//   los fragmentos se procesan y fb_write ocurre correctamente.
-//
-// BUG F3 — top_emitted = 0 aunque rasterizador emite
-//   CAUSA: rast_pixels_emitted es un output wire que viene del
-//   rasterizador. En v1.0 ya estaba conectado. El test F3 verifica
-//   top_emitted > 0 después de que rast_frame_done sube.
-//   Con token_ready=1'b1 hardwired, el rasterizador emitía fragmentos
-//   pero el testbench medía pixels_emitted desde el top, que sí debería
-//   subir. Pero si frame_done nunca sube (bug A2), el test no llega
-//   al punto de verificar pixels_emitted.
-//   Con el fix de A2 (frame_done en nivel) y el fix de backpressure,
-//   F3 debería pasar automáticamente.
-//
-// =============================================================================
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 module novagpu_core #(
     parameter DATA_WIDTH      = 128,
@@ -62,66 +62,66 @@ module novagpu_core #(
     input  wire        clk,
     input  wire        rst_n,
 
-    // PCIe / Data Interface
+    
     input  wire [255:0] pcie_data_in,
     output wire [255:0] pcie_data_out,
     input  wire         pcie_valid,
     output wire         pcie_ready,
 
-    // Motion Vectors
+    
     input  wire [15:0]  mv_x, mv_y,
     input  wire         mv_valid,
     input  wire         frame_start,
 
-    // Rasterizer input
+    
     input  wire [10:0]  v0_x, v0_y, v1_x, v1_y, v2_x, v2_y,
     input  wire [31:0]  c0, c1, c2, z0, z1, z2,
     input  wire         rast_start,
 
-    // MVP Matrix
+    
     input  wire [31:0]  mvp_m00, mvp_m01, mvp_m02, mvp_m03,
     input  wire [31:0]  mvp_m10, mvp_m11, mvp_m12, mvp_m13,
     input  wire [31:0]  mvp_m20, mvp_m21, mvp_m22, mvp_m23,
     input  wire [31:0]  mvp_m30, mvp_m31, mvp_m32, mvp_m33,
     input  wire         mvp_load,
 
-    // Frame output
+    
     output wire [DATA_WIDTH-1:0] frame_out,
     output wire                   frame_valid,
     output wire [2:0]             frame_count,
     output wire                   mvu_ready_out,
 
-    // Framebuffer write
+    
     output wire [31:0]  fb_color,
     output wire [18:0]  fb_addr,
     output wire         fb_write,
 
-    // Status
+    
     output wire [7:0]   rt_load,
     output wire         budget_ok_out,
     output wire [15:0]  sram_hits,
     output wire [15:0]  sram_misses,
 
-    // AXI4-Lite
+    
     output wire         axi_awready,
     output wire         axi_wready,
     output wire         axi_arready,
     output wire         axi_rvalid,
     output wire [DATA_WIDTH-1:0] axi_rdata,
 
-    // Bandwidth
+    
     output wire [15:0]  bw_instrmem,
     output wire [15:0]  bw_bvhmem,
     output wire [15:0]  bw_texmem,
     output wire [15:0]  bw_framebuf,
 
-    // Rast stats
+    
     output wire [19:0]  rast_pixels_emitted,
     output wire [19:0]  rast_pixels_skipped,
     output wire         rast_frame_done
 );
 
-    // ── TMU ───────────────────────────────────────────────────
+    
     wire [TAG_WIDTH-1:0]   tmu_in_tag   = pcie_data_in[TAG_WIDTH-1:0];
     wire [DATA_WIDTH-1:0]  tmu_in_data  = pcie_data_in[TAG_WIDTH+DATA_WIDTH-1:TAG_WIDTH];
     wire                   tmu_in_valid = pcie_valid;
@@ -141,7 +141,7 @@ module novagpu_core #(
         .fire_valid(tmu_fire_valid), .occupancy()
     );
 
-    // ── Shader Cluster ────────────────────────────────────────
+    
     wire [DATA_WIDTH-1:0] shader_out;
     wire                  shader_valid;
     wire [15:0]           shader_exec_count;
@@ -165,7 +165,7 @@ module novagpu_core #(
         .exec_count_out(shader_exec_count)
     );
 
-    // ── Budget Controller ─────────────────────────────────────
+    
     wire budget_ok;
     wire rt_active = shader_valid & budget_ok;
 
@@ -177,7 +177,7 @@ module novagpu_core #(
         .budget_ok(budget_ok), .rt_load(rt_load)
     );
 
-    // ── Three Tracing Unit ────────────────────────────────────
+    
     wire [DATA_WIDTH-1:0] tt_out;
     wire                  tt_valid;
 
@@ -191,10 +191,10 @@ module novagpu_core #(
         .frame_out(tt_out), .out_valid(tt_valid)
     );
 
-    // ── Tile Arbiter (declarado antes del rasterizador para usar tile_ready) ──
+    
     wire [DATA_WIDTH-1:0] rast_token;
     wire                  rast_token_valid, rast_busy;
-    wire                  tile_ready;   // FIX F1: backpressure al rasterizador
+    wire                  tile_ready;   
 
     wire [DATA_WIDTH-1:0] tile_in    = rast_token_valid ? rast_token : tt_out;
     wire                  tile_valid = rast_token_valid | tt_valid;
@@ -215,10 +215,10 @@ module novagpu_core #(
         .fragments_discarded(tile_discarded)
     );
 
-    // ── Triangle Rasterizer ───────────────────────────────────
-    // FIX F1: token_ready conectado a tile_ready (backpressure real)
-    // Esto evita que el rasterizador sobreescriba tokens que el arbiter
-    // todavía no ha procesado.
+    
+    
+    
+    
     triangle_rasterizer #(
         .DATA_WIDTH(DATA_WIDTH), .SCREEN_W(SCREEN_W), .SCREEN_H(SCREEN_H)
     ) u_rast (
@@ -230,13 +230,13 @@ module novagpu_core #(
         .z0(z0), .z1(z1), .z2(z2),
         .start(rast_start), .busy(rast_busy),
         .token_out(rast_token), .token_valid(rast_token_valid),
-        .token_ready(tile_ready),   // FIX F1: backpressure desde tile_arbiter
+        .token_ready(tile_ready),   
         .pixels_emitted(rast_pixels_emitted),
         .pixels_skipped(rast_pixels_skipped),
         .frame_done(rast_frame_done)
     );
 
-    // ── SRAM Integrada ────────────────────────────────────────
+    
     wire [DATA_WIDTH-1:0] sram_a_rdata, sram_b_rdata;
     wire                  sram_a_ack, sram_b_ack;
 
@@ -270,7 +270,7 @@ module novagpu_core #(
         .bw_framebuf(bw_framebuf)
     );
 
-    // ── MVU ───────────────────────────────────────────────────
+    
     wire mvu_ready;
 
     mvu #(
@@ -284,7 +284,7 @@ module novagpu_core #(
         .frame_count(frame_count), .mvu_ready(mvu_ready)
     );
 
-    // ── Salidas ───────────────────────────────────────────────
+    
     assign pcie_ready    = tmu_in_ready & mvu_ready;
     assign pcie_data_out = {{(256-DATA_WIDTH){1'b0}}, frame_out};
     assign fb_color      = tile_color;

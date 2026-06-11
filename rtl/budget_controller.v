@@ -1,12 +1,12 @@
 `timescale 1ns/1ps
-// =============================================================================
-// budget_controller.v  —  Budget Controller  v3.0
-// NovaGPU TS 2T  —  Nova Studios / Maximal Technology
-//
-// Controla porcentaje de ciclos dedicados a Ray Tracing.
-// Ventana de medición: WINDOW ciclos.
-// budget_ok = 1 mientras rt_cnt < THRESHOLD en ventana actual.
-// =============================================================================
+
+
+
+
+
+
+
+
 
 module budget_controller #(
     parameter CLK_MHZ    = 250,
@@ -33,7 +33,7 @@ module budget_controller #(
             window_cnt <= 10'd0;
             rt_cnt     <= 10'd0;
         end else begin
-            // Reseteo en frame_start tiene prioridad
+            
             if (frame_start) begin
                 rt_cnt     <= 10'd0;
                 window_cnt <= 10'd0;
@@ -50,7 +50,7 @@ module budget_controller #(
                     window_cnt <= 10'd0;
                     rt_cnt     <= 10'd0;
                 end else begin
-                    // En ciclos intermedios: evaluar contra umbral parcial
+                    
                     budget_ok <= (rt_cnt < THRESHOLD[9:0]);
                 end
             end

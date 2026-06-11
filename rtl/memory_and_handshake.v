@@ -1,35 +1,35 @@
 `timescale 1ns/1ps
-// ============================================================
-// memory_and_handshake.v — SRAM + Handshake v8 (FIX: literal de ancho ambiguo -> 10'b0)
-// NovaGPU TS 1T v7 — Equipo Alfa
-//
-// CORRECCION CRITICA v7:
-// El placeholder de datos en miss ha sido ELIMINADO.
-// Ahora usa datos procedurales generados algorítmicamente.
-//
-// ANTES (línea 85 en v6):
-//   rdata_o <= {addr_i, addr_i, addr_i, addr_i};  // PLACEHOLDER!
-//   // Esto retornaba la dirección como si fuera datos
-//
-// AHORA (v7):
-//   rdata_o <= procedural_texture_data(addr_i);  // Dato real
-//   // Genera datos de textura procedimental
-//
-// TIPOS DE DATOS GENERADOS:
-// 1. Texturas: Patrones de checkerboard, gradientes, ruido
-// 2. Z-buffer: Profundidades consistentes (0xFFFFFFFF = lejano)
-// 3. Framebuffer: Colores procedurales
-//
-// BENEFICIOS DE LA CORRECCION:
-// - Texturas: Sin basura visual
-// - Z-test: Valores válidos para comparación
-// - Framebuffer: Colores coherentes
-//
-// v7: Compatible con Verilator 4.038
-//   - Sin logic (wire/reg)
-//   - integer para loops de reset
-//   - conflict_o con threshold configurable
-// ============================================================
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 module neon_sram_controller #(
   parameter NUM_BANKS       = 64,
@@ -50,23 +50,23 @@ module neon_sram_controller #(
   output wire                   conflict_o
 );
 
-  localparam BANK_SEL_BITS = 6; // log2(64)
+  localparam BANK_SEL_BITS = 6; 
 
   wire [5:0]  bank_sel  = addr_i[5:0];
   wire [25:0] bank_addr = addr_i[31:6];
 
-  // Prefetch buffer
+  
   reg [DATA_WIDTH-1:0] pf_data  [0:PREFETCH_DEPTH-1];
   reg [31:0]           pf_addr  [0:PREFETCH_DEPTH-1];
   reg                  pf_valid [0:PREFETCH_DEPTH-1];
   reg [2:0]            pf_tail;
 
-  // Hit detection
+  
   reg                  prefetch_hit;
   reg [DATA_WIDTH-1:0] prefetch_hit_data;
 
   integer ci;
-  // FIX: sensibilidad explícita para suprimir warning '@* sensitive to all N words'
+  
   always @(pf_valid[0], pf_valid[1], pf_valid[2], pf_valid[3],
            pf_valid[4], pf_valid[5], pf_valid[6], pf_valid[7],
            pf_addr[0],  pf_addr[1],  pf_addr[2],  pf_addr[3],
@@ -84,13 +84,13 @@ module neon_sram_controller #(
     end
   end
 
-  // Latencia: 1 ciclo hit / 8 ciclos miss
+  
   reg [3:0] miss_counter;
   reg       miss_pending;
 
-  // ── DATOS PROCEDURAL CORREGIDOS v7 ─────────────────────────
-  // CORRECCION: En lugar de retornar addr como dato,
-  // generamos datos procedurales realistas
+  
+  
+  
 
   function [DATA_WIDTH-1:0] procedural_data;
     input [31:0] addr;
@@ -99,10 +99,10 @@ module neon_sram_controller #(
     reg [7:0] checker_x, checker_y;
     reg [31:0] z_value;
     begin
-      // Base pattern según banco (datos coherentes por banco)
-      pattern_base = {fn_bank_sel, 10'b0};  // FIX v8: 10'b0 reemplazado por 10'b0 (sin ambigüedad de bits)
+      
+      pattern_base = {fn_bank_sel, 10'b0};  
 
-      // Generar checkerboard para texturas
+      
       checker_x = addr[7:0];
       checker_y = addr[15:8];
 
@@ -111,24 +111,24 @@ module neon_sram_controller #(
       else
         pattern_base = pattern_base ^ 16'h0000;
 
-      // Z-buffer: dirección más profunda = valor mayor
-      z_value = addr[25:2] * 16'h0100;  // Z aumenta con dirección
+      
+      z_value = addr[25:2] * 16'h0100;  
 
-      // Construir dato coherente
+      
       procedural_data = {
-        pattern_base,                    // [127:112] Rojo
-        8'h80,                          // [111:104] Verde
-        addr[11:4],                     // [103:96] Azul (gradiente)
-        z_value,                        // [95:64]  Z-buffer
-        fn_bank_sel, fn_bank_sel,             // [63:48] UV coords
-        addr[15:0],                     // [47:32] Tag
-        addr[31:16],                    // [31:16] Metadata
-        addr[15:0]                      // [15:0]  Reserved
+        pattern_base,                    
+        8'h80,                          
+        addr[11:4],                     
+        z_value,                        
+        fn_bank_sel, fn_bank_sel,             
+        addr[15:0],                     
+        addr[31:16],                    
+        addr[15:0]                      
       };
     end
   endfunction
 
-  // Registro para almacenar dato procedural
+  
   reg [DATA_WIDTH-1:0] miss_data_reg;
 
   integer ri;
@@ -152,17 +152,17 @@ module neon_sram_controller #(
           miss_pending <= 1'b1;
           miss_counter <= 4'd8;
           ack_o        <= 1'b0;
-          // CORRECCION v7: Precalcular dato procedural
+          
           miss_data_reg <= procedural_data(addr_i, bank_sel);
         end else if (miss_counter > 4'd0) begin
           if (miss_counter > 0) miss_counter <= miss_counter - 4'd1;
           ack_o        <= 1'b0;
         end else begin
-          // CORRECCION v7: Usar dato procedural, NO placeholder
+          
           rdata_o              <= miss_data_reg;
           ack_o                <= 1'b1;
           miss_pending         <= 1'b0;
-          // También guardar en prefetch buffer
+          
           pf_data[pf_tail]     <= miss_data_reg;
           pf_addr[pf_tail]     <= addr_i;
           pf_valid[pf_tail]    <= 1'b1;
@@ -189,7 +189,7 @@ module neon_sram_controller #(
 endmodule
 
 
-// ── HANDSHAKE ASINCRÓNICO ─────────────────────────────────────
+
 module async_handshake #(
   parameter DATA_WIDTH = 128
 )(

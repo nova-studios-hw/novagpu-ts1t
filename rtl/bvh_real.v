@@ -1,27 +1,27 @@
 `timescale 1ns/1ps
-// =============================================================================
-// bvh_real.v  —  BVH Traversal  v3.1-FIX
-//
-// CORRECCIONES:
-//
-// BUG #1 — ALTO: hit_valid y miss_valid son pulsos de 1 ciclo
-//   El testbench usa wait_for(hit||miss, 200) y luego check_bool en el mismo
-//   ciclo. Si la FSM genera el pulso Y en ese mismo ciclo hay un @(posedge clk)
-//   del wait_for que ya lo consumió, la señal cae a 0 antes del check.
-//   FIX: Añadir registros de latch (hit_seen, miss_seen) que se mantienen altos
-//   hasta que se inicia un nuevo traversal. Los wire de salida OR ambos registros.
-//   Esto garantiza que check_bool ve el resultado incluso ciclos después del pulso.
-//
-// BUG #2 — MEDIO: nodes_tested se reseteaba por ray, no acumulaba entre rays
-//   El testbench D4 verifica nodes_tested>0 DESPUÉS de varias traversals.
-//   Con el reset por ray, si la lectura ocurre entre traversals el valor es 0.
-//   FIX: nodes_tested es un acumulador global; nodes_tested_last guarda el 
-//   conteo del último traversal si el testbench necesita ver solo ese valor.
-//   (El test D4 chequea bvh_nodes_tst que es el último valor, no global.)
-//   Keeping per-ray reset but exposing last known value.
-// =============================================================================
 
-// ── Reciprocal LUT (256 entradas, Q16.16) ─────────────────────
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 module reciprocal_lut (
     input  wire [7:0]  index,
     output reg  [31:0] recip_q1616
@@ -61,7 +61,7 @@ module reciprocal_lut (
     end
 endmodule
 
-// ── AABB 2D Slab Intersection ─────────────────────────────────
+
 module aabb_intersect_2d (
     input  wire signed [31:0] ray_ox, ray_oy,
     input  wire signed [31:0] inv_dx, inv_dy,
@@ -108,7 +108,7 @@ module aabb_intersect_2d (
                  ($signed(tmax_eff) >= 32'sd0);
 endmodule
 
-// ── BVH Traversal Top ──────────────────────────────────────────
+
 module bvh_real #(
     parameter BVH_DEPTH  = 8,
     parameter DATA_WIDTH = 128
@@ -120,7 +120,7 @@ module bvh_real #(
     input  wire                   ray_valid,
     output reg                    ray_ready,
 
-    // FIX: hit_valid and miss_valid are now latched (stay high until next ray)
+    
     output wire                   hit_valid,
     output reg  [7:0]             hit_prim_id,
     output reg  [31:0]            hit_t,
@@ -133,7 +133,7 @@ module bvh_real #(
     output reg  [15:0]            misses_total
 );
 
-    // ── BVH Node ROM ──────────────────────────────────────────
+    
     localparam N = 8;
     reg signed [31:0] node_xmin  [0:N-1];
     reg signed [31:0] node_ymin  [0:N-1];
@@ -186,13 +186,13 @@ module bvh_real #(
         node_leaf[7] = 1'b0; node_prim[7]  = 8'd0;
     end
 
-    // ── Ray components ────────────────────────────────────────
+    
     wire signed [31:0] ray_ox = ray_token[127:96];
     wire signed [31:0] ray_oy = ray_token[95:64];
     wire signed [31:0] ray_dx = ray_token[63:32];
     wire signed [31:0] ray_dy = ray_token[31:0];
 
-    // ── Reciprocal LUT ────────────────────────────────────────
+    
     wire [7:0]  rdx_idx = ray_dx[23:16];
     wire [7:0]  rdy_idx = ray_dy[23:16];
     wire [31:0] inv_dx, inv_dy;
@@ -200,7 +200,7 @@ module bvh_real #(
     reciprocal_lut u_recip_x (.index(rdx_idx), .recip_q1616(inv_dx));
     reciprocal_lut u_recip_y (.index(rdy_idx), .recip_q1616(inv_dy));
 
-    // ── AABB intersector ─────────────────────────────────────
+    
     reg  signed [31:0] test_xmin, test_ymin, test_xmax, test_ymax;
     wire               aabb_hit;
     wire signed [31:0] aabb_tmin, aabb_tmax;
@@ -213,13 +213,13 @@ module bvh_real #(
         .hit(aabb_hit), .tmin_out(aabb_tmin), .tmax_out(aabb_tmax)
     );
 
-    // ── DFS Stack ─────────────────────────────────────────────
+    
     localparam [2:0] STACK_MAX = BVH_DEPTH - 1;
     reg [2:0]  stack     [0:BVH_DEPTH-1];
     reg [2:0]  stack_ptr;
     reg [2:0]  cur_node;
 
-    // ── FSM ───────────────────────────────────────────────────
+    
     localparam ST_IDLE   = 3'd0;
     localparam ST_PUSH   = 3'd1;
     localparam ST_TEST   = 3'd2;
@@ -231,9 +231,9 @@ module bvh_real #(
     reg [2:0] state;
     reg [DATA_WIDTH-1:0] saved_ray;
 
-    // FIX BUG #1: Latched hit/miss signals
-    // These registers hold their value until a new ray starts.
-    // The testbench can read them anytime after wait_for exits.
+    
+    
+    
     reg hit_valid_r;
     reg miss_valid_r;
     
@@ -267,7 +267,7 @@ module bvh_real #(
                         cur_node     <= 3'd0;
                         stack_ptr    <= 3'd0;
                         nodes_tested <= 16'd0;
-                        // FIX: Clear latched results when new ray starts
+                        
                         hit_valid_r  <= 1'b0;
                         miss_valid_r <= 1'b0;
                         state        <= ST_PUSH;
@@ -305,7 +305,7 @@ module bvh_real #(
                 end
 
                 ST_LEAF: begin
-                    // FIX: Set latch, not pulse
+                    
                     hit_valid_r <= 1'b1;
                     hit_prim_id <= node_prim[cur_node];
                     hit_t       <= aabb_tmin;
@@ -325,8 +325,8 @@ module bvh_real #(
                 end
 
                 ST_MISS: begin
-                    // FIX: Set latch. If there was already a hit, keep hit_valid_r.
-                    // Only set miss if no hit occurred at all.
+                    
+                    
                     if (!hit_valid_r)
                         miss_valid_r <= 1'b1;
                     misses_total <= misses_total + 16'd1;

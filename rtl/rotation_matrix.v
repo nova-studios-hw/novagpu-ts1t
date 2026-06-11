@@ -1,11 +1,11 @@
 `timescale 1ns/1ps
-// =============================================================================
-// rotation_matrix.v  —  Rotation Matrix  v3.0
-// NovaGPU TS 2T  —  Nova Studios / Maximal Technology
-//
-// Genera vértices de un triángulo rotando alrededor del centro de pantalla.
-// Usa tabla LUT de sin/cos de 64 entradas (Q8.8).
-// =============================================================================
+
+
+
+
+
+
+
 
 module rotation_matrix #(
     parameter SCREEN_W = 640,
@@ -22,12 +22,12 @@ module rotation_matrix #(
     output reg         valid
 );
 
-    // ── Centros de pantalla ───────────────────────────────────
+    
     localparam [9:0] CX = SCREEN_W / 2;
     localparam [9:0] CY = SCREEN_H / 2;
 
-    // ── Tabla LUT sin/cos (64 entradas, Q8.8, 0..2π) ─────────
-    // Valor = round(128 * sin(2π*i/64))
+    
+    
     reg signed [8:0] sin_lut [0:63];
     reg signed [8:0] cos_lut [0:63];
 
@@ -99,13 +99,13 @@ module rotation_matrix #(
         sin_lut[63]=9'sd48;  cos_lut[63]=9'sd93;
     end
 
-    // ── Ángulo de rotación ────────────────────────────────────
+    
     reg [5:0] angle;
 
-    // ── Posiciones de vértices base (relativas al centro) ─────
-    // v0: arriba (0, -SCALE)
-    // v1: abajo-izquierda (-SCALE*0.87, +SCALE*0.5)
-    // v2: abajo-derecha  (+SCALE*0.87, +SCALE*0.5)
+    
+    
+    
+    
     localparam signed [9:0] BASE0_X = 10'sd0;
     localparam signed [9:0] BASE0_Y = -(SCALE);
     localparam signed [9:0] BASE1_X = -(SCALE * 87 / 100);
@@ -113,8 +113,8 @@ module rotation_matrix #(
     localparam signed [9:0] BASE2_X = (SCALE * 87 / 100);
     localparam signed [9:0] BASE2_Y = (SCALE / 2);
 
-    // ── Función de rotación ───────────────────────────────────
-    // x' = x*cos - y*sin;  y' = x*sin + y*cos  (escala /128)
+    
+    
     function [9:0] rot_x;
         input signed [9:0] bx, by;
         input [5:0] ang;
