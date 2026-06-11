@@ -1,4 +1,4 @@
-´´text
+```text
 to clone the project
 git clone https://github.com/nova-studios-hw/novagpu-ts1t.git
 
