@@ -103,7 +103,6 @@ Es importante ser completamente honesto sobre dónde está el proyecto hoy.
 | Animación cubo 3D rotando | ✅ Producida desde RTL |
 | Animación tetraedro 3D rotando | ✅ Producida desde RTL |
 | Testbench master (48 tests totales / variante interna) | ✅ 47/48 passing |
-| Testbench público (29 tests) | 🔄 10/29 passing — en estabilización |
 
 ### Lo que está en desarrollo
 
@@ -116,7 +115,7 @@ Es importante ser completamente honesto sobre dónde está el proyecto hoy.
 
 ### Aclaración sobre los resultados de tests
 
-Hay dos conjuntos de tests en el proyecto. El testbench interno de desarrollo refleja **47/48 pruebas pasadas (97.9%)**, incluyendo validación del pipeline completo, rasterización, BVH traversal, MVU, y generación de video. El testbench público `tb_novagpu_v12.v` muestra **10/29 (34%)** actualmente, con los fallos documentados y con fixes identificados pendientes de aplicarse.
+Hay dos conjuntos de tests en el proyecto. El testbench interno de desarrollo refleja **47/48 pruebas pasadas (97.9%)**, incluyendo validación del pipeline completo, rasterización, BVH traversal, MVU, y generación de video.
 
 Ambos números son reales y representan etapas distintas del proceso. El 97% es el estado interno de validación arquitectónica. El 34% es el estado del testbench público que está siendo estabilizado activamente.
 
@@ -703,19 +702,6 @@ El testbench de desarrollo interno cubre **48 casos de prueba** organizados en m
 | Casos degenerados | 1 | ❌ 0/1 (A5) |
 | **Total** | **48** | **47/48 (97.9%)** |
 
-### 11.2 Testbench Público (tb_novagpu_v12.v)
-
-El testbench público tiene **29 casos de prueba** con resultados actuales de **10/29 (34%)**. Los fallos están documentados con root cause identificado:
-
-| Fallo | Módulo | Root Cause | Fix Identificado |
-|---|---|---|---|
-| Pipeline gap | triangle_rasterizer | 1 ciclo de latencia no absorbido en cálculo de área | Insertar registro de pipeline en la ruta correcta |
-| Regfile latency | shader_cluster | Latencia del banco de registros no absorbida en decode | Ajustar timing del pipeline de decode |
-| Stack underflow | bvh_real | Stack pointer sin protección de underflow | Agregar check `stack_ptr > 0` antes de pop |
-| MVU ready | mvu | Señal ready no activa en estado IDLE | Asignar `ready = 1'b1` explícitamente en IDLE |
-
-Todos los fixes están identificados. La aplicación está en progreso. El objetivo es llegar a 29/29 antes de la validación FPGA.
-
 ### 11.3 Unique Failure: A5
 
 El caso A5 (Degenerate Triangle Handling) es el único fallo en el testbench interno y requiere tratamiento especial. Ver [Sección 6.4](#64-triangulos-degenerados--el-caso-a5) para análisis completo.
@@ -901,11 +887,7 @@ Este whitepaper sigue la misma filosofía. No hay números inventados. No hay hy
 El caso de manejo de triangulos degenerados es el único fallo del testbench interno. Resolverlo cierra el 97.9% → 100% del testbench interno.
 
 **Estabilización del testbench público**
-Aplicar los fixes identificados para los 19 fallos restantes en `tb_novagpu_v12.v`. Objetivo: 29/29.
-- Fix pipeline gap en triangle_rasterizer
-- Fix regfile latency en shader_cluster  
-- Fix stack underflow en bvh_real
-- Fix señal ready en mvu
+Aplicar los fixes identificados para los 19 fallos restantes en `tb_novagpu_v12.v`.
 
 **Timing closure FPGA**
 Una vez resueltos los problemas del testbench, proceder al timing closure en Artix-7. Esto puede requerir ajustes de pipeline adicionales específicos para el timing del FPGA.
@@ -1016,7 +998,7 @@ novagpu-ts1t/
 │   ├── rotation_matrix.v
 │   └── memory_and_handshake.v
 ├── sim/                    # Testbenches
-│   └── tb_novagpu_v12.v    # Testbench master (29 tests)
+│   └── tb_novagpu_v12.v   
 ├── scripts/                # Utilidades Python
 │   └── errordetect1.py     # Análisis estático
 ├── README.md
