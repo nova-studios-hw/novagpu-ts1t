@@ -509,10 +509,11 @@ module tb_novagpu_v13;
         $display("\n  [A5] Degenerado: delta pixels = 0");
         begin : a5_blk
             integer px_before;
-            px_before = rast_emitted;
             rast_set(11'd100, 11'd100, 11'd200, 11'd100, 11'd300, 11'd100,
                      32'hFFFF0000, 32'hFF00FF00, 32'hFF0000FF);
             rast_fire;
+            @(posedge clk);  // FIX: esperar 1 ciclo para que pixels_emitted se resetee a 0
+            px_before = rast_emitted;
             wait_sig(rast_done, 16'd500);
             check_bool("A5_degenerate_no_pixels", (rast_emitted - px_before) == 20'd0);
         end
